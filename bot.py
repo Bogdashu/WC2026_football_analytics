@@ -1236,7 +1236,7 @@ async def cmd_group(u,c):
     if not teams:
         await u.message.reply_text("\u274c Группа не найдена."); return
     probs=BASELINE.get("tournament_probs",{})
-    teams.sort(key=lambda t:probs.get(t,{}).get("P_W",0),reverse=True)
+    teams.sort(key=lambda t:(BASELINE.get("mean_points",{}).get(t,0.0),probs.get(t,{}).get("P_R32",0)),reverse=True)
     lines=[f"\U0001f3d9 <b>ГРУППА\u00a0{letter}</b>",
            "<i>«Выход» — шанс выйти из группы (топ-2 + лучшие 3-и места); \U0001f3c6 — шанс стать чемпионом.</i>",
            f"{SEP}",""]
@@ -1266,7 +1266,7 @@ async def cmd_standings(u,c):
         lines+=["",SEP,"\U0001f949 <b>Лучшие 3-и места — 8 команд в плей-офф:</b>",
                 "<i>в формате на 48 команд проходят 8 лучших сборных с 3-го места</i>",""]
         for t,letter,p in thirds:
-            lines.append(f"  {rt(t)} <code>[{letter}]</code> \u2014 шанс выхода {p*100:.0f}%")
+            lines.append(f"  {rt(t)} <code>[{letter}]</code> \u2014 ��анс выхода {p*100:.0f}%")
     lines+=["","<i>Подробный расклад: /group F</i>"]
     await u.message.reply_text("\n".join(lines),parse_mode=ParseMode.HTML)
 
@@ -1657,7 +1657,7 @@ def third_place_qualifiers():
     for letter in "ABCDEFGHIJKL":
         teams=get_group_teams(letter)
         if len(teams)<3: continue
-        teams.sort(key=lambda t:probs.get(t,{}).get("P_R32",0),reverse=True)
+        teams.sort(key=lambda t:(BASELINE.get("mean_points",{}).get(t,0.0),probs.get(t,{}).get("P_R32",0)),reverse=True)
         third=teams[2]
         thirds.append((third,letter,probs.get(third,{}).get("P_R32",0)))
     thirds.sort(key=lambda x:x[2],reverse=True)
@@ -1715,7 +1715,7 @@ def compute_real_standings(letter,finished=None):
 def group_advance_ranked(letter):
     teams=get_group_teams(letter)
     probs=BASELINE.get("tournament_probs",{})
-    teams.sort(key=lambda t:probs.get(t,{}).get("P_R32",0),reverse=True)
+    teams.sort(key=lambda t:(BASELINE.get("mean_points",{}).get(t,0.0),probs.get(t,{}).get("P_R32",0)),reverse=True)
     return [(t,probs.get(t,{}).get("P_R32",0)) for t in teams]
 
 def value_bets(limit=60,edge_min=0.05,odd_min=1.5,odd_max=7.0,min_prob=0.30):
@@ -1779,7 +1779,7 @@ async def cmd_results(u,c):
                "Сыгранных матчей пока нет — турнир стартует 11 июня.",
                "ℹ️ Прогнозы: /forecast · расписание: /schedule"]
         await u.message.reply_text("\n".join(lines),parse_mode=ParseMode.HTML); return
-    lines=["📊 <b>РЕЗУЛЬТАТЫ МАТЧЕЙ</b>","<i>🌍 Реальность vs 🤖 прогноз</i>",SEP,""]
+    lines=["📊 <b>РЕЗУЛЬТАТЫ МАТЧЕЙ</b>","<i>🌍 Реальность vs 🤖 прог��оз</i>",SEP,""]
     cor=tot=0
     for d,home,away,hs,as_,host in rows:
         p_h,p_d,p_a=predict_1x2(home,away,str(host)!="1")
