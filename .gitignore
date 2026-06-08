@@ -1,0 +1,17 @@
+*
+
+!.gitignore
+!README.md
+!requirements.txt
+!Procfile
+
+!bot.py
+!wc2026_simulate.py
+!wc2026_seed_kickoffs.py
+!wc2026_upload_baseline.py
+!wc2026_fix_db_groups.py
+!wc2026_relabel_groups.py
+!wc2026_ingest_results.py
+
+!wc2026_elo.csv
+!wc2026_squads.csv

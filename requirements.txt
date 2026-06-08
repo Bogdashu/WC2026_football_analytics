@@ -1,0 +1,8 @@
+# WC2026 football analytics — Python deps for bot.py + sims
+numpy>=1.26,<3
+pandas>=2.0,<3
+requests>=2.31
+beautifulsoup4>=4.12
+lxml>=4.9
+python-telegram-bot[job-queue]>=21,<22
+psycopg2-binary>=2.9
