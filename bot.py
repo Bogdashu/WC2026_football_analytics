@@ -967,7 +967,7 @@ async def cmd_about(u,c):
 async def cmd_reload(u,c):
     if not is_admin(u.effective_user.id):
         await u.message.reply_text("\u274c Нет доступа."); return
-    await u.message.reply_text("\u23f3 Перечитываю данные\u2026")
+    await u.message.reply_text("\u23f3 Перечитываю данны��\u2026")
     load_all()
     played=BASELINE.get("matches_played",0); total=BASELINE.get("matches_total",72)
     await u.message.reply_text(
@@ -1258,7 +1258,7 @@ async def cmd_group(u,c):
 async def cmd_standings(u,c):
     modal=BASELINE.get("modal_forecast",{}).get("group_top2",{})
     probs=BASELINE.get("tournament_probs",{})
-    lines=["\U0001f3d9 <b>ВСЕ 12 ГРУПП — ПРОГНОЗ</b>",
+    lines=["\U0001f3d9 <b>В��Е 12 ГРУПП — ПРОГНОЗ</b>",
            "<i>\U0001f947\U0001f948 — кто выйдет в плей-офф по версии нейросети</i>",f"{SEP}",""]
     for letter in "ABCDEFGHIJKL":
         pair=modal.get(letter,[])
@@ -2200,7 +2200,7 @@ def _export_elo_baseline_to_csv(path="wc2026_elo_baseline.csv"):
 
 
 async def cmd_predict_legacy(u,c):
-    """/predict_legacy [N] — следующие N матчей: side-by-side СТАРАЯ vs НОВАЯ.
+    """/predict_legacy [N] — следующие N матчей: side-by-side СТАРАЯ vs НО��АЯ.
     Старая = frozen pre-tournament Elo. Новая = live Elo после ingest-обновлений."""
     if not is_admin(u.effective_user.id):
         await u.message.reply_text("\U0001f512 Только для разработчика."); return
@@ -2286,34 +2286,150 @@ async def cmd_sim_legacy(u,c):
         with open("wc2026_baseline_legacy.json", encoding="utf-8") as f:
             legacy = json.load(f)
         tp_leg = legacy.get("tournament_probs", {})
-        ranked_leg = sorted(tp_leg.items(), key=lambda kv: -kv[1].get("P_W", 0))[:15]
+        ranked_leg = sorted(tp_leg.items(), key=lambda kv: -kv[1].get("P_W", 0))
         modal_leg = legacy.get("modal_forecast", {}).get("modal_champion", "\u2014")
         tp_new = BASELINE.get("tournament_probs", {})
         modal_new = BASELINE.get("modal_forecast", {}).get("modal_champion", "\u2014")
+        played = legacy.get("matches_played", 0)
+        total = legacy.get("matches_total", 72)
         lines = [
             "\U0001f52c <b>LEGACY SIMULATION</b>",
             f"<i>{sims:,} \u043f\u0440\u043e\u043a\u0440\u0443\u0442\u043e\u0432 \u00b7 frozen pre-tournament Elo \u00b7 \u043d\u0438\u043a\u0430\u043a\u0438\u0445 in-tournament \u0443\u043b\u0443\u0447\u0448\u0435\u043d\u0438\u0439</i>",
+            f"<i>\u0421\u044b\u0433\u0440\u0430\u043d\u043e \u043c\u0430\u0442\u0447\u0435\u0439: {played}/{total} (\u0438\u0445 \u0440\u0435\u0437\u0443\u043b\u044c\u0442\u0430\u0442\u044b \u0437\u0430\u0444\u0438\u043a\u0441\u0438\u0440\u043e\u0432\u0430\u043d\u044b, \u043d\u0435 \u0440\u0435\u0441\u0438\u043c\u0443\u043b\u0438\u0440\u0443\u044e\u0442\u0441\u044f)</i>",
             SEP,
             f"\U0001f3c6 <b>\u0427\u0435\u043c\u043f\u0438\u043e\u043d (\u0421\u0422\u0410\u0420.):</b> {esc(ru_team(modal_leg))}",
             f"\U0001f3c6 <b>\u0427\u0435\u043c\u043f\u0438\u043e\u043d (\u041d\u041e\u0412.):</b> {esc(ru_team(modal_new))}",
             "",
-            "<b>\u0422\u043e\u043f-15 \u043f\u0440\u0435\u0442\u0435\u043d\u0434\u0435\u043d\u0442\u043e\u0432 (\u041f\u041e \u0421\u0422\u0410\u0420\u041e\u0419) \u2014 \u0421\u0422\u0410\u0420. \u2192 \u041d\u041e\u0412.:</b>",
+            f"<b>\u041f\u041e\u041b\u041d\u042b\u0419 \u0420\u0415\u0419\u0422\u0418\u041d\u0413 ({len(ranked_leg)} \u043a\u043e\u043c\u0430\u043d\u0434) \u2014 \u043f\u043e \u0421\u0422\u0410\u0420\u041e\u0419 \u0441\u0438\u0441\u0442\u0435\u043c\u0435:</b>",
             "<pre>",
-            f"{'#':<3}{'\u041a\u043e\u043c\u0430\u043d\u0434\u0430':<20}{'\u0421\u0422\u0410\u0420.':>9}{'\u041d\u041e\u0412.':>9}{'\u0394':>9}",
+            f"{'#':<3}{'\u041a\u043e\u043c\u0430\u043d\u0434\u0430':<18}{'P_W':>7}{'P_F':>7}{'P_SF':>7}{'P_QF':>7}{'R16':>7}",
         ]
         for i, (team, probs) in enumerate(ranked_leg, 1):
+            pw  = probs.get("P_W",  0)*100
+            pf  = probs.get("P_F",  0)*100
+            psf = probs.get("P_SF", 0)*100
+            pqf = probs.get("P_QF", 0)*100
+            pr16= probs.get("P_R16",0)*100
+            lines.append(f"{i:<3}{ru_team(team)[:18]:<18}{pw:>6.2f}%{pf:>6.2f}%{psf:>6.2f}%{pqf:>6.2f}%{pr16:>6.1f}%")
+        lines.append("</pre>")
+        lines.append("")
+        lines.append("<b>\u0414\u0435\u043b\u044c\u0442\u0430 P(W) \u0421\u0422\u0410\u0420. \u2192 \u041d\u041e\u0412. (\u0442\u043e\u043f-20):</b>")
+        lines.append("<pre>")
+        lines.append(f"{'#':<3}{'\u041a\u043e\u043c\u0430\u043d\u0434\u0430':<20}{'\u0421\u0422\u0410\u0420.':>8}{'\u041d\u041e\u0412.':>8}{'\u0394':>8}")
+        for i, (team, probs) in enumerate(ranked_leg[:20], 1):
             pw_leg = probs.get("P_W", 0)*100
             pw_new = tp_new.get(team, {}).get("P_W", 0)*100
             delta = pw_new - pw_leg
             arrow = "\u2191" if delta > 0.1 else ("\u2193" if delta < -0.1 else "\u00b7")
-            lines.append(f"{i:<3}{ru_team(team)[:20]:<20}{pw_leg:>7.2f}% {pw_new:>7.2f}% {delta:>+7.2f}{arrow}")
+            lines.append(f"{i:<3}{ru_team(team)[:20]:<20}{pw_leg:>7.2f}%{pw_new:>7.2f}%{delta:>+7.2f}{arrow}")
         lines.append("</pre>")
         lines.append(f"\n\U0001f4be \u0424\u0430\u0439\u043b: <code>wc2026_baseline_legacy.json</code>")
-        lines.append("\U0001f4dd \u0414\u043b\u044f \u043e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u0438\u044f \u0431\u0435\u0437 \u043d\u043e\u0432\u043e\u0439 \u0441\u0438\u043c\u0443\u043b\u044f\u0446\u0438\u0438: <code>/compare_top</code>")
+        lines.append("\U0001f4dd \u041f\u043e\u0432\u0442\u043e\u0440 \u0431\u0435\u0437 \u0441\u0438\u043c\u0443\u043b\u044f\u0446\u0438\u0438: <code>/compare_top</code>")
         for p in split_text("\n".join(lines)):
             await u.message.reply_text(p, parse_mode=ParseMode.HTML)
     except subprocess.TimeoutExpired:
         await u.message.reply_text("\u274c Sim timeout (10 \u043c\u0438\u043d). \u041f\u043e\u043f\u0440\u043e\u0431\u0443\u0439 \u043c\u0435\u043d\u044c\u0448\u0435 sims.")
+    except Exception as e:
+        await u.message.reply_text(f"\u274c \u041e\u0448\u0438\u0431\u043a\u0430: <pre>{esc(str(e))}</pre>", parse_mode=ParseMode.HTML)
+
+
+async def cmd_sim_new(u,c):
+    """/sim_new [sims=20000] \u2014 \u0440\u0443\u0447\u043d\u043e\u0439 \u0440\u0435\u0441\u0438\u043c \u041d\u041e\u0412\u041e\u0419 \u0441\u0438\u0441\u0442\u0435\u043c\u044b (live Elo + smart-credit).
+    \u041f\u0435\u0440\u0435\u0437\u0430\u043f\u0438\u0441\u044b\u0432\u0430\u0435\u0442 \u043e\u0441\u043d\u043e\u0432\u043d\u043e\u0439 BASELINE \u0432 \u0411\u0414 (\u043a\u0430\u043a job_auto_update), \u0441\u044b\u0433\u0440\u0430\u043d\u043d\u044b\u0435 \u043c\u0430\u0442\u0447\u0438 \u0437\u0430\u0444\u0438\u043a\u0441\u0438\u0440\u043e\u0432\u0430\u043d\u044b."""
+    global ELO, BASELINE
+    if not is_admin(u.effective_user.id):
+        await u.message.reply_text("\U0001f512 \u0422\u043e\u043b\u044c\u043a\u043e \u0434\u043b\u044f \u0440\u0430\u0437\u0440\u0430\u0431\u043e\u0442\u0447\u0438\u043a\u0430."); return
+    sims=20000
+    if c.args:
+        try: sims=max(1000,min(int(c.args[0]),100000))
+        except: pass
+    await u.message.reply_text(
+        f"\U0001f680 \u0417\u0430\u043f\u0443\u0441\u043a\u0430\u044e \u041d\u041e\u0412\u0423\u042e \u0441\u0438\u043c\u0443\u043b\u044f\u0446\u0438\u044e \u043d\u0430 <b>{sims:,}</b> \u043f\u0440\u043e\u043a\u0440\u0443\u0442\u043e\u0432\n"
+        "<i>live Elo (\u0441 smart-credit \u0438 in-tournament \u043e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u0438\u044f\u043c\u0438)</i>\n"
+        "<i>\u0421\u044b\u0433\u0440\u0430\u043d\u043d\u044b\u0435 \u043c\u0430\u0442\u0447\u0438 \u043f\u043e\u0434\u0441\u0442\u0430\u0432\u043b\u044f\u044e\u0442\u0441\u044f \u043a\u0430\u043a \u0444\u0430\u043a\u0442</i>\n"
+        f"\u26a0\ufe0f <b>\u041f\u0435\u0440\u0435\u0437\u0430\u043f\u0438\u0448\u0435\u0442 \u043e\u0441\u043d\u043e\u0432\u043d\u043e\u0439 BASELINE</b> \u0432 \u0411\u0414.\n"
+        "\u2026 2\u20135 \u043c\u0438\u043d\u0443\u0442. \u0411\u0443\u0434\u0435\u0442 \u043f\u043e\u043b\u043d\u044b\u0439 \u0440\u0435\u0439\u0442\u0438\u043d\u0433 \u043a\u043e\u043c\u0430\u043d\u0434.", parse_mode=ParseMode.HTML)
+    try:
+        _export_elo_to_csv("wc2026_elo.csv")
+        _export_fixtures_to_csv()
+        old_modal = BASELINE.get("modal_forecast", {}).get("modal_champion", "\u2014")
+        old_tp = dict(BASELINE.get("tournament_probs", {}))
+        result = await asyncio.to_thread(
+            subprocess.run,
+            [sys.executable, "-X", "utf8", "wc2026_simulate.py",
+             "--sims", str(sims),
+             "--elo", "wc2026_elo.csv",
+             "--out", "wc2026_baseline.json"],
+            capture_output=True, text=True, timeout=900
+        )
+        if result.returncode != 0:
+            err = (result.stderr or result.stdout or "")[-800:]
+            await u.message.reply_text(f"\u274c Sim \u0443\u043f\u0430\u043b:\n<pre>{esc(err)}</pre>", parse_mode=ParseMode.HTML); return
+        # \u0417\u0430\u043b\u0438\u0432\u0430\u0435\u043c \u0432 \u0411\u0414 + \u0432\u0435\u0440\u0441\u0438\u043e\u043d\u043d\u044b\u0439 \u0441\u043d\u044d\u043f\u0448\u043e\u0442
+        from datetime import datetime as _dt
+        label = f"manual_{_dt.utcnow().strftime('%Y%m%d_%H%M')}"
+        upload = await asyncio.to_thread(
+            subprocess.run,
+            [sys.executable, "-X", "utf8", "wc2026_upload_baseline.py",
+             "wc2026_baseline.json", "--label", label],
+            capture_output=True, text=True, timeout=120
+        )
+        if upload.returncode != 0:
+            err = (upload.stderr or upload.stdout or "")[-500:]
+            await u.message.reply_text(f"\u26a0\ufe0f Sim \u043e\u043a, \u043d\u043e upload \u0443\u043f\u0430\u043b:\n<pre>{esc(err)}</pre>", parse_mode=ParseMode.HTML)
+        # \u041f\u0435\u0440\u0435\u0437\u0430\u0433\u0440\u0443\u0436\u0430\u0435\u043c BASELINE \u0432 \u043f\u0440\u043e\u0446\u0435\u0441\u0441\u0435
+        load_all()
+        with open("wc2026_baseline.json", encoding="utf-8") as f:
+            new_data = json.load(f)
+        tp = new_data.get("tournament_probs", {})
+        ranked = sorted(tp.items(), key=lambda kv: -kv[1].get("P_W", 0))
+        new_modal = new_data.get("modal_forecast", {}).get("modal_champion", "\u2014")
+        played = new_data.get("matches_played", 0)
+        total = new_data.get("matches_total", 72)
+        lines = [
+            "\U0001f680 <b>\u041d\u041e\u0412\u0410\u042f \u0421\u0418\u041c\u0423\u041b\u042f\u0426\u0418\u042f</b>",
+            f"<i>{sims:,} \u043f\u0440\u043e\u043a\u0440\u0443\u0442\u043e\u0432 \u00b7 live Elo + smart-credit</i>",
+            f"<i>\u0421\u044b\u0433\u0440\u0430\u043d\u043e: {played}/{total} (\u0440\u0435\u0437\u0443\u043b\u044c\u0442\u0430\u0442\u044b \u0437\u0430\u0444\u0438\u043a\u0441\u0438\u0440\u043e\u0432\u0430\u043d\u044b)</i>",
+            f"<i>\U0001f4cc \u0421\u043d\u044d\u043f\u0448\u043e\u0442: <code>{label}</code></i>",
+            SEP,
+            f"\U0001f3c6 <b>\u0427\u0435\u043c\u043f\u0438\u043e\u043d:</b> {esc(ru_team(new_modal))}",
+        ]
+        if old_modal != new_modal:
+            lines.append(f"   <i>\u0431\u044b\u043b\u043e: {esc(ru_team(old_modal))} \u2192 \u0441\u0442\u0430\u043b\u043e: {esc(ru_team(new_modal))}</i>")
+        lines += [
+            "",
+            f"<b>\u041f\u041e\u041b\u041d\u042b\u0419 \u0420\u0415\u0419\u0422\u0418\u041d\u0413 ({len(ranked)} \u043a\u043e\u043c\u0430\u043d\u0434)</b>",
+            "<pre>",
+            f"{'#':<3}{'\u041a\u043e\u043c\u0430\u043d\u0434\u0430':<18}{'P_W':>7}{'P_F':>7}{'P_SF':>7}{'P_QF':>7}{'R16':>7}",
+        ]
+        for i, (team, probs) in enumerate(ranked, 1):
+            pw  = probs.get("P_W",  0)*100
+            pf  = probs.get("P_F",  0)*100
+            psf = probs.get("P_SF", 0)*100
+            pqf = probs.get("P_QF", 0)*100
+            pr16= probs.get("P_R16",0)*100
+            lines.append(f"{i:<3}{ru_team(team)[:18]:<18}{pw:>6.2f}%{pf:>6.2f}%{psf:>6.2f}%{pqf:>6.2f}%{pr16:>6.1f}%")
+        lines.append("</pre>")
+        # \u0414\u0435\u043b\u044c\u0442\u0430 \u043e\u0442\u043d\u043e\u0441\u0438\u0442\u0435\u043b\u044c\u043d\u043e \u043f\u0440\u0435\u0434\u044b\u0434\u0443\u0449\u0435\u0433\u043e BASELINE
+        if old_tp:
+            lines += ["", "<b>\u0427\u0442\u043e \u0438\u0437\u043c\u0435\u043d\u0438\u043b\u043e\u0441\u044c \u043e\u0442\u043d\u043e\u0441\u0438\u0442\u0435\u043b\u044c\u043d\u043e \u043f\u0440\u0435\u0434\u044b\u0434\u0443\u0449\u0435\u0433\u043e BASELINE (\u0442\u043e\u043f-10 \u0434\u0432\u0438\u0436\u0435\u043d\u0438\u0439):</b>"]
+            deltas = []
+            for t, p in tp.items():
+                pw_new = p.get("P_W", 0)*100
+                pw_old = old_tp.get(t, {}).get("P_W", 0)*100
+                deltas.append((t, pw_old, pw_new, pw_new-pw_old))
+            deltas.sort(key=lambda r: -abs(r[3]))
+            lines.append("<pre>")
+            lines.append(f"{'\u041a\u043e\u043c\u0430\u043d\u0434\u0430':<20}{'\u0431\u044b\u043b\u043e':>8}{'\u0441\u0442\u0430\u043b\u043e':>9}{'\u0394':>8}")
+            for t, old_p, new_p, d in deltas[:10]:
+                ar = "\u2191" if d > 0.1 else ("\u2193" if d < -0.1 else "\u00b7")
+                lines.append(f"{ru_team(t)[:20]:<20}{old_p:>7.2f}%{new_p:>8.2f}%{d:>+7.2f}{ar}")
+            lines.append("</pre>")
+        lines.append(f"\n\u2705 BASELINE \u043e\u0431\u043d\u043e\u0432\u043b\u0451\u043d \u0432 \u0411\u0414. /modal, /forecast \u0438 \u043a\u0430\u043d\u0430\u043b \u0442\u0435\u043f\u0435\u0440\u044c \u0438\u0441\u043f\u043e\u043b\u044c\u0437\u0443\u044e\u0442 \u044d\u0442\u0443 \u0432\u0435\u0440\u0441\u0438\u044e.")
+        for p in split_text("\n".join(lines)):
+            await u.message.reply_text(p, parse_mode=ParseMode.HTML)
+    except subprocess.TimeoutExpired:
+        await u.message.reply_text("\u274c Sim timeout (15 \u043c\u0438\u043d). \u041f\u043e\u043f\u0440\u043e\u0431\u0443\u0439 \u043c\u0435\u043d\u044c\u0448\u0435 sims.")
     except Exception as e:
         await u.message.reply_text(f"\u274c \u041e\u0448\u0438\u0431\u043a\u0430: <pre>{esc(str(e))}</pre>", parse_mode=ParseMode.HTML)
 
@@ -2498,6 +2614,7 @@ def main():
         # Dev-only legacy comparison commands
         ("predict_legacy",cmd_predict_legacy),
         ("sim_legacy",cmd_sim_legacy),
+        ("sim_new",cmd_sim_new),
         ("compare_top",cmd_compare_top),
     ]
     for name,fn in handlers:
