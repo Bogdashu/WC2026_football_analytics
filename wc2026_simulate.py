@@ -63,6 +63,8 @@ def load_fixtures(path):
     hc = cols.get("home_team") or cols.get("home")
     ac = cols.get("away_team") or cols.get("away")
     hostc = cols.get("host")
+    hsc = cols.get("home_score") or cols.get("hs")
+    asc = cols.get("away_score") or cols.get("as") or cols.get("as_")
     rows = []
     for _, r in df.iterrows():
         h, a = str(r[hc]).strip(), str(r[ac]).strip()
@@ -74,7 +76,15 @@ def load_fixtures(path):
                 host = int(r[hostc])
             except (TypeError, ValueError):
                 host = 0
-        rows.append({"home": h, "away": a, "host": host})
+        # Фиксируем сыгранные матчи: если счёт есть — симулятор его не разыгрывает.
+        hs, as_ = None, None
+        if hsc is not None and pd.notna(r[hsc]):
+            try: hs = int(r[hsc])
+            except (TypeError, ValueError): hs = None
+        if asc is not None and pd.notna(r[asc]):
+            try: as_ = int(r[asc])
+            except (TypeError, ValueError): as_ = None
+        rows.append({"home": h, "away": a, "host": host, "hs": hs, "as_": as_})
     return rows
 
 
@@ -233,7 +243,7 @@ LEGEND_ELO = {
     "Portugal":  45.0,  # Ronaldo — прощальный турнир
     "Croatia":   40.0,  # Modric — последний танец
     "Brazil":    35.0,  # Neymar — последний шанс на титул
-    "France":    25.0,  # Mbappe — в топ-форме, гонится за величием
+    "France":    25.0,  # Mbappe — в ��оп-форме, гонится за величием
     "Egypt":     20.0,  # Salah — последний большой шанс
     "Poland":    18.0,  # Lewandowski — закрыть карьеру красиво
 }
@@ -304,7 +314,11 @@ def sim_group(teams, gfixtures, ratings, gm, calib, rng, default_elo):
     tbl = {t: {"pts": 0, "gf": 0, "ga": 0} for t in teams}
     for f in gfixtures:
         neutral = (f["host"] == 0)
-        hg, ag = sample_score(f["home"], f["away"], ratings, gm, neutral, rng, default_elo)
+        # Сыгранный матч — берем реальный счёт как факт, иначе семплируем.
+        if f.get("hs") is not None and f.get("as_") is not None:
+            hg, ag = int(f["hs"]), int(f["as_"])
+        else:
+            hg, ag = sample_score(f["home"], f["away"], ratings, gm, neutral, rng, default_elo)
         h, a = f["home"], f["away"]
         tbl[h]["gf"] += hg
         tbl[h]["ga"] += ag
@@ -323,6 +337,97 @@ def sim_group(teams, gfixtures, ratings, gm, calib, rng, default_elo):
         -tbl[t]["pts"], -tbl[t]["gd"], -tbl[t]["gf"], rng.random()
     ))
     return standings, tbl
+
+
+# ------------------------- FIFA-2026 R32 bracket ---------------------------
+# Official FIFA-2026 bracket for the Round of 32 (12 winners + 12 runners-up + 8 best thirds).
+# Each entry is a pair (slot_a, slot_b) of teams that face each other in R32.
+# Listed in bracket order — adjacent pairs meet in R16, etc. (left half then right half).
+# Slot encoding:
+#   "1X" → winner of group X
+#   "2X" → runner-up of group X
+#   "3X" → one of the 8 best third-placed teams, allocated to this slot by FIFA matrix
+# Sources: ESPN bracket map + FIFA-2026 regulations.
+FIFA_R32_SLOTS = [
+    # ---- LEFT HALF (top → bottom) ----
+    ("1E", "3rd_ABCDF"),
+    ("1I", "3rd_CDFGH"),
+    ("2A", "2B"),
+    ("1F", "2C"),
+    ("2K", "2L"),
+    ("1H", "2J"),
+    ("1D", "3rd_BEFIJ"),
+    ("1G", "3rd_AEHIJ"),
+    # ---- RIGHT HALF (top → bottom) ----
+    ("1C", "2F"),
+    ("2E", "2I"),
+    ("1A", "3rd_CEFHI"),
+    ("1L", "3rd_EHIJK"),
+    ("1J", "2H"),
+    ("2D", "2G"),
+    ("1B", "3rd_EFGIJ"),
+    ("1K", "3rd_DEIJL"),
+]
+
+# Each "3rd_*" slot can be filled only by a third-placed team coming from one of these groups
+# (FIFA's official third-place allocation matrix — ensures no group-stage rematches in R32).
+FIFA_3RD_ALLOWED = {
+    "3rd_ABCDF": frozenset("ABCDF"),
+    "3rd_CDFGH": frozenset("CDFGH"),
+    "3rd_BEFIJ": frozenset("BEFIJ"),
+    "3rd_AEHIJ": frozenset("AEHIJ"),
+    "3rd_CEFHI": frozenset("CEFHI"),
+    "3rd_EHIJK": frozenset("EHIJK"),
+    "3rd_EFGIJ": frozenset("EFGIJ"),
+    "3rd_DEIJL": frozenset("DEIJL"),
+}
+
+
+def _assign_thirds_to_slots(best_thirds_with_g, rng):
+    """Greedy assignment of 8 best thirds to 8 FIFA bracket slots.
+
+    best_thirds_with_g: list of (group_letter, team_name), the 8 best third-placed teams.
+    Returns: dict slot_id (e.g. '3rd_ABCDF') → team_name.
+
+    Strategy: process slots with fewest feasible candidates first (most-constrained-first),
+    randomize ties via rng. Falls back to any remaining team if the FIFA matrix is
+    infeasible for this particular set of 8 groups (rare; sims continue cleanly).
+    """
+    available = list(best_thirds_with_g)
+    assigned = {}
+    slot_ids = list(FIFA_3RD_ALLOWED.keys())
+    # Shuffle for tie-break variety, then sort by constraint tightness
+    rng.shuffle(slot_ids)
+    slot_ids.sort(key=lambda s: sum(1 for g, _ in available if g in FIFA_3RD_ALLOWED[s]))
+    for slot in slot_ids:
+        cands = [i for i, (g, _) in enumerate(available) if g in FIFA_3RD_ALLOWED[slot]]
+        if not cands:  # rare fallback — FIFA matrix infeasible for this group set
+            cands = list(range(len(available)))
+        idx = cands[int(rng.integers(0, len(cands)))] if len(cands) > 1 else cands[0]
+        assigned[slot] = available[idx][1]
+        available.pop(idx)
+    return assigned
+
+
+def build_fifa_r32_bracket(qualifiers_by_g, best_thirds_with_g, rng):
+    """Build the 32-team bracket array in FIFA-2026 R32 order.
+
+    qualifiers_by_g: dict group_letter → sequence indexable by [0] (1st) and [1] (2nd).
+    best_thirds_with_g: list of (group_letter, team) — 8 best thirds.
+    Returns: list of 32 teams; pairs (bracket[0],bracket[1]), (bracket[2],bracket[3]), …
+             face off in R32 per the official bracket.
+    """
+    third_assignment = _assign_thirds_to_slots(best_thirds_with_g, rng)
+    bracket = []
+    for slot_a, slot_b in FIFA_R32_SLOTS:
+        for slot in (slot_a, slot_b):
+            if slot.startswith("1"):
+                bracket.append(qualifiers_by_g[slot[1]][0])
+            elif slot.startswith("2"):
+                bracket.append(qualifiers_by_g[slot[1]][1])
+            else:  # 3rd-place slot
+                bracket.append(third_assignment[slot])
+    return bracket
 
 
 # ------------------------------ orchestration ------------------------------
@@ -382,22 +487,25 @@ def run(args):
                 gd_sum[t] += tbl[t]["gd"]
             qualifiers_by_g[g] = standings
             t3 = standings[2]
-            thirds.append((tbl[t3]["pts"], tbl[t3]["gd"], tbl[t3]["gf"], t3))
+            thirds.append((tbl[t3]["pts"], tbl[t3]["gd"], tbl[t3]["gf"], g, t3))
 
-        # best 8 thirds
+        # best 8 thirds (keep group letter for FIFA bracket assignment)
         thirds.sort(key=lambda x: (-x[0], -x[1], -x[2]))
-        best_thirds = [t for _, _, _, t in thirds[:8]]
+        top8 = thirds[:8]
+        best_thirds = [t for _, _, _, _, t in top8]
+        best_thirds_with_g = [(g, t) for _, _, _, g, t in top8]
         r32 = [qualifiers_by_g[g][0] for g in groups] + \
               [qualifiers_by_g[g][1] for g in groups] + best_thirds  # 12 + 12 + 8 = 32
         for t in r32:
             reach[t]["R32"] += 1
 
-        # ------ knockout ------
-        # Simplified bracket: shuffle 32 teams and pair them. (FIFA's exact
-        # R32 seeding is published but plays a small role vs. team strength;
-        # this MC estimates marginal advancement probabilities well.)
-        bracket = list(r32)
-        rng.shuffle(bracket)
+        # ------ knockout (FIFA-2026 official bracket) ------
+        # Bracket follows the published R32 slot map: winners face matrix-assigned
+        # third-placed teams (different groups guaranteed), runners-up have fixed
+        # cross-group pairs (2A-2B, 2K-2L, 2D-2G, 2E-2I), etc. This is materially
+        # more accurate than random shuffling, especially for top-half vs bottom-half
+        # collision probabilities.
+        bracket = build_fifa_r32_bracket(qualifiers_by_g, best_thirds_with_g, rng)
         for round_name in ("R16", "QF", "SF", "F", "W"):
             nxt = []
             for i in range(0, len(bracket), 2):
@@ -486,12 +594,15 @@ def run(args):
         ts = groups[g]
         sorted_by_p3 = sorted(ts, key=lambda t: -pos_counts[t][3])
         t3 = sorted_by_p3[0]
-        third_candidates.append((pts_sum[t3] / sims, gd_sum[t3] / sims, t3))
+        third_candidates.append((pts_sum[t3] / sims, gd_sum[t3] / sims, g, t3))
     third_candidates.sort(key=lambda r: (-r[0], -r[1]))
-    modal_thirds = [t for _, _, t in third_candidates[:8]]
-    modal_r32 = [modal_top2[g][0] for g in sorted(groups)] + \
-                [modal_top2[g][1] for g in sorted(groups)] + modal_thirds
-    print(f"\nModal R32 field ({len(modal_r32)} teams): " + ", ".join(modal_r32))
+    modal_thirds_with_g = [(g, t) for _, _, g, t in third_candidates[:8]]
+    modal_thirds = [t for _, t in modal_thirds_with_g]
+    # Build modal R32 in official FIFA bracket order (deterministic — seeded rng).
+    modal_qualifiers_by_g = {g: list(modal_top2[g]) for g in groups}
+    modal_rng = np.random.default_rng(0)
+    modal_r32 = build_fifa_r32_bracket(modal_qualifiers_by_g, modal_thirds_with_g, modal_rng)
+    print(f"\nModal R32 field ({len(modal_r32)} teams, FIFA bracket order): " + ", ".join(modal_r32))
 
     print("\nModal knockout path (deterministic argmax of model probabilities):")
     current = list(modal_r32)

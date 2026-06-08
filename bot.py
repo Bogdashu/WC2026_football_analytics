@@ -522,6 +522,24 @@ def clear_pending_notification():
 
 
 import re as _re_label
+def make_snapshot_label(kind, with_time=False):
+    """Единая схема лейблов снапшотов прогнозов: ГГГГ-ММ-ДД[_ЧЧММ]_<тип>.
+
+    kind — тип прогноза:
+      'auto'     — ежедневная авто-ресимуляция (полная, 30k)
+      'manual'   — ручная полная ресимуляция (/sim_new)
+      'prematch' — замороженный предтурнирный baseline
+      'ingest'   — снапшот после загрузки результатов (без ресим)
+    Лейбл сортируется хронологически; хвост документирует тип прогноза.
+    Время (ЧЧММ, UTC) добавляется только при with_time=True (несколько прогонов в день).
+    """
+    now = datetime.utcnow()
+    stamp = now.strftime("%Y-%m-%d")
+    if with_time:
+        stamp += now.strftime("_%H%M")
+    return f"{stamp}_{kind}"
+
+
 def snapshot_baseline(label, force=False):
     """Copy current 'baseline' content under key 'baseline_<label>'.
 
@@ -967,7 +985,7 @@ async def cmd_about(u,c):
 async def cmd_reload(u,c):
     if not is_admin(u.effective_user.id):
         await u.message.reply_text("\u274c Нет доступа."); return
-    await u.message.reply_text("\u23f3 Перечитываю данны��\u2026")
+    await u.message.reply_text("\u23f3 Перечитываю данны������\u2026")
     load_all()
     played=BASELINE.get("matches_played",0); total=BASELINE.get("matches_total",72)
     await u.message.reply_text(
@@ -1494,7 +1512,7 @@ async def cmd_update(u,c):
     await u.message.reply_text("\u2705 Результаты загружены.\n\u23f3 Обновляю таблицу и прогнозы\u2026 (базовый прогноз заморожен)",parse_mode=ParseMode.HTML)
     load_all()
     # snapshot the current baseline state for permanent history
-    snapshot_baseline(date.today().isoformat())
+    snapshot_baseline(make_snapshot_label("ingest"))
     # resolve yesterday's predictions too
     resolve_predictions(date.today()-timedelta(days=1))
     resolve_predictions(date.today())
@@ -2047,6 +2065,22 @@ async def _run_auto_update(bot):
         before=count_finished()
         subprocess.run([sys.executable,"-X","utf8","wc2026_ingest_results.py"],
                        capture_output=True,text=True,timeout=90,env=env)
+        # Best-effort: pull fresh 1X2 bookmaker odds (independent of new results).
+        # Safe to fail — sensation_note & /match cards just fall back to stored values.
+        if os.environ.get("THE_ODDS_API_KEY"):
+            try:
+                ro = subprocess.run(
+                    [sys.executable, "-X", "utf8", "wc2026_odds_fetch.py"],
+                    capture_output=True, text=True, timeout=60, env=env)
+                if ro.returncode == 0:
+                    log.info("auto-update: fresh odds fetched")
+                else:
+                    log.warning("auto-update: odds fetch rc=%s stderr=%s",
+                                ro.returncode, (ro.stderr or "")[:300])
+            except Exception as e:
+                log.warning("auto-update: odds fetch exception: %s", e)
+        else:
+            log.info("auto-update: THE_ODDS_API_KEY not set, skipping odds refresh")
         after=count_finished()
         if after<=before:
             log.info("auto-update: no new results (have %d)",after); return
@@ -2076,7 +2110,7 @@ async def _run_auto_update(bot):
 
         # 3. Заливка нового BASELINE в БД.
         try:
-            label = f"auto-{date.today().isoformat()}"
+            label = make_snapshot_label("auto")
             r2 = subprocess.run(
                 [sys.executable, "-X", "utf8", "wc2026_upload_baseline.py",
                  "wc2026_baseline.json", "--label", label],
@@ -2091,7 +2125,7 @@ async def _run_auto_update(bot):
 
         # 4. Перезагружаем в память, сохраняем снапшот, разрешаем прогнозы.
         load_all()
-        snapshot_baseline(date.today().isoformat())
+        snapshot_baseline(make_snapshot_label("auto"))
         resolve_predictions(date.today())
         resolve_predictions(date.today()-timedelta(days=1))
         ch=os.environ.get("CHANNEL_ID","")
@@ -2366,8 +2400,7 @@ async def cmd_sim_new(u,c):
             err = (result.stderr or result.stdout or "")[-800:]
             await u.message.reply_text(f"\u274c Sim \u0443\u043f\u0430\u043b:\n<pre>{esc(err)}</pre>", parse_mode=ParseMode.HTML); return
         # \u0417\u0430\u043b\u0438\u0432\u0430\u0435\u043c \u0432 \u0411\u0414 + \u0432\u0435\u0440\u0441\u0438\u043e\u043d\u043d\u044b\u0439 \u0441\u043d\u044d\u043f\u0448\u043e\u0442
-        from datetime import datetime as _dt
-        label = f"manual_{_dt.utcnow().strftime('%Y%m%d_%H%M')}"
+        label = make_snapshot_label("manual", with_time=True)
         upload = await asyncio.to_thread(
             subprocess.run,
             [sys.executable, "-X", "utf8", "wc2026_upload_baseline.py",
@@ -2560,7 +2593,7 @@ HELP = "\n".join([
     "/group — расклад группы, например <code>/group F</code>",
     "/team — профиль, например <code>/team Argentina</code>",
     "/today · /tomorrow — матчи дня с прогнозом",
-    "/next [N] — следующие N матчей с прогнозом",
+    "/next [N] — следующие N матчей с п��огнозом",
     "",
     "🌍 <b>Реальность</b> <i>(только факты)</i>",
     "/schedule [N|all] — расписание матчей",
