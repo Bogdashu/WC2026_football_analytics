@@ -1751,13 +1751,24 @@ async def cmd_schedule(u,c):
     if not rows:
         await u.message.reply_text("📅 Ближайших матчей не найдено.",parse_mode=ParseMode.HTML); return
     lines=["📅 <b>РАСПИСАНИЕ МАТЧЕЙ</b>","<i>🌍 Только факты · без прогнозов (прогноз — /today, /next)</i>",SEP]
-    cur_day=None
+    _MSK=timezone(timedelta(hours=3))
+    items=[]
     for d,home,away,host,o1,ox,o2 in rows:
-        if d!=cur_day:
-            cur_day=d; lines.append(""); lines.append(f"📆 <b>{fmt_date_ru(d)}</b>")
+        kt=get_kickoff(d,home,away)
+        if kt:
+            msk_dt=kt.astimezone(_MSK); msk_d=msk_dt.date()
+        else:
+            msk_dt=None; msk_d=d
+        items.append((msk_d,msk_dt,d,home,away,host))
+    # Группируем и сортируем по МСК-календарному дню (а не по local NA match_date)
+    items.sort(key=lambda x:(x[0], x[1] or datetime(x[0].year,x[0].month,x[0].day,tzinfo=_MSK), x[3]))
+    cur_day=None
+    for msk_d,msk_dt,d,home,away,host in items:
+        if msk_d!=cur_day:
+            cur_day=msk_d; lines.append(""); lines.append(f"📆 <b>{fmt_date_ru(msk_d)}</b>")
         grp=get_team_group(home) or "?"
         venue="" if str(host)=="1" else " ⚪"
-        kt=get_kickoff(d,home,away); kt_lbl=fmt_msk(kt)
+        kt_lbl=(msk_dt.strftime("%H:%M")+" \u041c\u0421\u041a") if msk_dt else ""
         tprefix=f"🕒 {kt_lbl}  " if kt_lbl else ""
         lines.append(f"  {tprefix}{rt(home)} — {rt(away)}  <code>[{grp}]</code>{venue}")
     lines.append(""); lines.append(SEP)
@@ -1815,8 +1826,22 @@ async def cmd_table(u,c):
                 gd=s["GF"]-s["GA"]; nm=esc(ru_team(t))[:13]; mk=" ✅" if i<=2 else ""
                 lines.append(f"<code>{i}. {nm:<13}{s['P']:>2}{s['PTS']:>3}{gd:>+4}</code>{mk}")
         else:
-            for i,(t,p) in enumerate(group_advance_ranked(letter),1):
-                mk="✅" if i<=2 else ("🟡" if i==3 else "▫️")
+            mp_=BASELINE.get("mean_points",{}) or {}
+            probs_=BASELINE.get("tournament_probs",{}) or {}
+            modal_pair=(BASELINE.get("modal_forecast",{}) or {}).get("group_top2",{}).get(letter)
+            all_t=get_group_teams(letter)
+            if modal_pair and len(modal_pair)>=2 and modal_pair[0] in all_t and modal_pair[1] in all_t:
+                rest=[t for t in all_t if t not in modal_pair[:2]]
+                rest.sort(key=lambda t:(mp_.get(t,0.0),probs_.get(t,{}).get("P_R32",0)),reverse=True)
+                ranked=[modal_pair[0],modal_pair[1]]+rest
+            else:
+                ranked=sorted(all_t,key=lambda t:(mp_.get(t,0.0),probs_.get(t,{}).get("P_R32",0)),reverse=True)
+            third_set=set(t for t,_,_ in third_place_qualifiers())
+            for i,t in enumerate(ranked,1):
+                p=probs_.get(t,{}).get("P_R32",0)
+                if i<=2: mk="✅"
+                elif i==3 and t in third_set: mk="🟡"
+                else: mk="▫️"
                 lines.append(f"{i}. {mk} <b>{rt(t)}</b>  <i>{p*100:.0f}% на выход</i>")
         blocks.append("\n".join(lines))
     blocks.append("")
