@@ -33,6 +33,12 @@ log = logging.getLogger("ingest")
 API_BASE = "https://api.football-data.org/v4"
 COMP_CODE = "WC"  # FIFA World Cup 2026
 
+# ---- Elo обновление после каждого матча ЧМ (форма по ходу турнира) ----
+# eloratings.net стандарт: K=60 для ЧМ, HFA=80 для одной из хозяев (США/Канада/Мексика).
+ELO_K = 60
+ELO_HFA = 80          # бонус команде-хозяину поля (только если host=1)
+DEFAULT_ELO = 1500    # для команд, внезапно пропущенных в wc2026_elo
+
 # football-data.org team name -> our DB team name
 NAME_MAP = {
     "Mexico":               "Mexico",
@@ -117,10 +123,104 @@ def ensure_score_columns(conn):
         cur.execute("""
             ALTER TABLE wc2026_fixtures
             ADD COLUMN IF NOT EXISTS home_score INT,
-            ADD COLUMN IF NOT EXISTS away_score INT
+            ADD COLUMN IF NOT EXISTS away_score INT,
+            ADD COLUMN IF NOT EXISTS elo_applied BOOLEAN DEFAULT FALSE
         """)
     conn.commit()
-    log.info("Ensured home_score/away_score columns exist")
+    log.info("Ensured home_score/away_score/elo_applied columns exist")
+
+
+def _expected_score(elo_a: float, elo_b: float) -> float:
+    """Ожидаемый результат команды A против B (0..1) по Elo."""
+    return 1.0 / (1.0 + 10.0 ** ((elo_b - elo_a) / 400.0))
+
+
+def _goal_diff_multiplier(gd: int) -> float:
+    """Множитель по разнице мячей (World Football Elo)."""
+    g = abs(gd)
+    if g <= 1: return 1.0
+    if g == 2: return 1.5
+    return (11.0 + g) / 8.0   # 3:1.75, 4:1.875, 5:2.0 …
+
+
+def _elo_update_for_match(elo_h: float, elo_a: float, hs: int, as_: int, host: int):
+    """Возвращает (new_elo_home, new_elo_away)."""
+    # Эффективный Elo хозяина с учётом HFA (если host=1, т.е. хозяева в своёй стране).
+    elo_h_eff = elo_h + (ELO_HFA if int(host) == 1 else 0)
+    e_home = _expected_score(elo_h_eff, elo_a)
+    e_away = 1.0 - e_home
+
+    if hs > as_:   r_home, r_away = 1.0, 0.0
+    elif hs < as_: r_home, r_away = 0.0, 1.0
+    else:          r_home, r_away = 0.5, 0.5
+
+    g = _goal_diff_multiplier(hs - as_)
+    new_h = elo_h + ELO_K * g * (r_home - e_home)
+    new_a = elo_a + ELO_K * g * (r_away - e_away)
+    return new_h, new_a
+
+
+def apply_elo_updates(conn):
+    """Обновляет wc2026_elo по всем закрытым матчам, где elo_applied=FALSE.
+    Проход в хронологическом порядке (match_date → home), чтобы 2-й тур
+    использовал рейтинги после 1-го тура. Идемпотентно: флаг elo_applied не даёт удвоить."""
+    # Загружаем все текущие Elo в память.
+    elo: dict = {}
+    with conn.cursor() as cur:
+        cur.execute("SELECT team, elo FROM wc2026_elo")
+        for t, e in cur.fetchall():
+            elo[t] = float(e)
+
+    if not elo:
+        log.warning("wc2026_elo пуста — пропускаю Elo обновление")
+        return 0
+
+    # Берём все закрытые матчи без применённого Elo, в порядке игры.
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT match_date, home, away, home_score, away_score, COALESCE(host, 0)
+            FROM wc2026_fixtures
+            WHERE home_score IS NOT NULL
+              AND away_score IS NOT NULL
+              AND COALESCE(elo_applied, FALSE) = FALSE
+            ORDER BY match_date, home
+        """)
+        pending = cur.fetchall()
+
+    if not pending:
+        log.info("Elo: нет новых матчей для обновления")
+        return 0
+
+    applied = 0
+    with conn.cursor() as cur:
+        for d, home, away, hs, as_, host in pending:
+            eh = elo.get(home, DEFAULT_ELO)
+            ea = elo.get(away, DEFAULT_ELO)
+            new_h, new_a = _elo_update_for_match(eh, ea, int(hs), int(as_), int(host))
+            elo[home] = new_h
+            elo[away] = new_a
+            # Сохраняем обновленные рейтинги (UPSERT).
+            cur.execute(
+                "INSERT INTO wc2026_elo (team, elo) VALUES (%s, %s) "
+                "ON CONFLICT (team) DO UPDATE SET elo = EXCLUDED.elo",
+                (home, new_h),
+            )
+            cur.execute(
+                "INSERT INTO wc2026_elo (team, elo) VALUES (%s, %s) "
+                "ON CONFLICT (team) DO UPDATE SET elo = EXCLUDED.elo",
+                (away, new_a),
+            )
+            cur.execute(
+                "UPDATE wc2026_fixtures SET elo_applied = TRUE "
+                "WHERE match_date = %s AND home = %s AND away = %s",
+                (d, home, away),
+            )
+            applied += 1
+            log.info("Elo: %s %d:%d %s | %s: %.0f→%.0f | %s: %.0f→%.0f",
+                     home, hs, as_, away, home, eh, new_h, away, ea, new_a)
+    conn.commit()
+    log.info("Elo: обновлено %d матчей", applied)
+    return applied
 
 
 def main():
@@ -185,6 +285,9 @@ def main():
         for r, a, h2, a2 in not_found:
             log.warning("  raw: '%s' vs '%s'  ->  normalized: '%s' vs '%s'", r, a, h2, a2)
 
+    # Обновляем Elo по всем новым закрытым матчам (форма по ходу ЧМ).
+    elo_applied = apply_elo_updates(conn)
+
     # Summary
     with conn.cursor() as cur:
         cur.execute("SELECT COUNT(*) FROM wc2026_fixtures WHERE home_score IS NOT NULL")
@@ -198,6 +301,7 @@ def main():
     print(f"Updated in DB       : {updated}")
     print(f"Not matched         : {len(not_found)}")
     print(f"Total scored in DB  : {n}")
+    print(f"Elo updates applied : {elo_applied}")
 
 
 if __name__ == "__main__":

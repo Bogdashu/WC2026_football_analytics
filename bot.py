@@ -1767,10 +1767,9 @@ async def cmd_schedule(u,c):
         if msk_d!=cur_day:
             cur_day=msk_d; lines.append(""); lines.append(f"📆 <b>{fmt_date_ru(msk_d)}</b>")
         grp=get_team_group(home) or "?"
-        venue="" if str(host)=="1" else " ⚪"
         kt_lbl=(msk_dt.strftime("%H:%M")+" \u041c\u0421\u041a") if msk_dt else ""
         tprefix=f"🕒 {kt_lbl}  " if kt_lbl else ""
-        lines.append(f"  {tprefix}{rt(home)} — {rt(away)}  <code>[{grp}]</code>{venue}")
+        lines.append(f"  {tprefix}{rt(home)} — {rt(away)}  <code>[{grp}]</code>")
     lines.append(""); lines.append(SEP)
     lines.append("ℹ️ Прогнозы на матчи: /today · /tomorrow · /next")
     for p in split_text("\n".join(lines)):
