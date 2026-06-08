@@ -1607,10 +1607,21 @@ async def job_results(ctx):
         actual="H" if hs>as_ else ("A" if as_>hs else "D")
         pred_txt={"H":f"Победа {ru_team(home)}","D":"Ничья","A":f"Победа {ru_team(away)}"}[pred]
         ok=pred==actual; correct+=int(ok); total+=1
-        lines+=[
+        block=[
             f"\U0001f3df <b>{rt(home)}</b> {hs}:{as_} <b>{rt(away)}</b>",
-            f"\U0001f916 Прогноз: {esc(pred_txt)} — {'\u2705 сбылся' if ok else '\u274c мимо'}",""
+            f"\U0001f916 Прогноз: {esc(pred_txt)} — {'\u2705 сбылся' if ok else '\u274c мимо'}",
         ]
+        chg=get_match_elo_change(d,home,away)
+        if chg and chg[0] is not None:
+            eh_b,eh_a,ea_b,ea_a=chg
+            dh=eh_a-eh_b; da=ea_a-ea_b
+            def _sg(x): return (f"+{x:.0f}" if x>=0 else f"{x:.0f}")
+            block.append(
+                f"\U0001f4ca Elo: {rt(home)} <code>{eh_b:.0f}→{eh_a:.0f}</code> (<b>{_sg(dh)}</b>) · "
+                f"{rt(away)} <code>{ea_b:.0f}→{ea_a:.0f}</code> (<b>{_sg(da)}</b>)"
+            )
+        block.append("")
+        lines+=block
     if total:
         _s=get_accuracy_stats(); c_all,r_all=_s["correct"],_s["resolved"]
         season=f" \u00b7 за турнир: {c_all}/{r_all}" if r_all else ""
@@ -1619,6 +1630,52 @@ async def job_results(ctx):
                 "\U0001f916 @wc2026_football_bot"]
     for p in split_text("\n".join(lines)):
         await ctx.bot.send_message(chat_id=ch,text=p,parse_mode=ParseMode.HTML)
+
+async def _post_elo_summary_to_channel(bot,ch,title_suffix=""):
+    """Сводный пост: как турнир переписал Elo всех команд (pre → now).
+    Сортируется по Δ: топ-рост и топ-падение."""
+    base=get_elo_baseline()
+    cur =get_current_elo_db()
+    if not base or not cur: return False
+    rows=[]
+    for t,e_now in cur.items():
+        e_pre=base.get(t)
+        if e_pre is None: continue
+        d=e_now-e_pre
+        if abs(d)<0.5: continue
+        rows.append((t,e_pre,e_now,d))
+    if not rows: return False
+    rows.sort(key=lambda x:x[3],reverse=True)
+    top_up=[r for r in rows if r[3]>0][:10]
+    top_dn=[r for r in rows if r[3]<0]
+    top_dn=sorted(top_dn,key=lambda x:x[3])[:10]
+    title=f"\U0001f4ca <b>ИЗМЕНЕНИЯ ELO{(' ' + title_suffix) if title_suffix else ''}</b>"
+    lines=[title,"<i>Как турнир переписал силу команд</i>",SEP,""]
+    def _sg(x): return (f"+{x:.0f}" if x>=0 else f"{x:.0f}")
+    if top_up:
+        lines.append("\U0001f680 <b>Кто прибавил</b>")
+        for i,(t,p,n,d) in enumerate(top_up,1):
+            lines.append(f"{i:>2}. <b>{rt(t)}</b>  <code>{p:.0f}</code>→<code>{n:.0f}</code>  <b>{_sg(d)}</b>")
+        lines.append("")
+    if top_dn:
+        lines.append("\U0001f4c9 <b>Кто просел</b>")
+        for i,(t,p,n,d) in enumerate(top_dn,1):
+            lines.append(f"{i:>2}. <b>{rt(t)}</b>  <code>{p:.0f}</code>→<code>{n:.0f}</code>  <b>{_sg(d)}</b>")
+        lines.append("")
+    lines.append(SEP)
+    lines.append("\U0001f916 @wc2026_football_bot")
+    for p in split_text("\n".join(lines)):
+        await bot.send_message(chat_id=ch,text=p,parse_mode=ParseMode.HTML)
+    return True
+
+async def cmd_elo_summary(u,c):
+    if not is_admin(u.effective_user.id): return
+    ch=os.environ.get("CHANNEL_ID","")
+    if not ch:
+        await u.message.reply_text("\u26a0\ufe0f CHANNEL_ID не задан"); return
+    suffix=" ".join(c.args).strip() if getattr(c,"args",None) else ""
+    ok=await _post_elo_summary_to_channel(c.bot,ch,title_suffix=suffix)
+    await u.message.reply_text("\u2705 Отправлено" if ok else "\u26a0\ufe0f Нет данных (нужно ≥1 сыгранный матч)")
 
 async def job_check_notifications(ctx):
     load_all()
@@ -1674,6 +1731,63 @@ def get_all_finished():
                 return cur.fetchall()
     except Exception as e:
         log.warning("get_all_finished: %s",e); return []
+
+def get_match_elo_change(d,home,away):
+    """Возвращает (eh_before, eh_after, ea_before, ea_after) для матча или None."""
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT elo_home_before, elo_home_after, elo_away_before, elo_away_after "
+                    "FROM wc2026_fixtures WHERE match_date=%s AND home=%s AND away=%s",
+                    (d,home,away))
+                row=cur.fetchone()
+                if not row or row[0] is None: return None
+                return tuple(float(x) if x is not None else None for x in row)
+    except Exception as e:
+        log.warning("get_match_elo_change: %s",e); return None
+
+def get_elo_baseline():
+    """Pre-tournament Elo snapshot (захватывается при первом ingest-е результатов)."""
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT team, elo FROM wc2026_elo_baseline")
+                return {t:float(e) for t,e in cur.fetchall()}
+    except Exception as e:
+        log.warning("get_elo_baseline: %s",e); return {}
+
+def get_current_elo_db():
+    """Текущий Elo из БД (свежее чтение, не кешированный ELO-словарь)."""
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT team, elo FROM wc2026_elo")
+                return {t:float(e) for t,e in cur.fetchall()}
+    except Exception as e:
+        log.warning("get_current_elo_db: %s",e); return {}
+
+def get_meta(key,default=None):
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT value FROM wc2026_meta WHERE key=%s",(key,))
+                row=cur.fetchone()
+                return row[0] if row else default
+    except Exception:
+        return default
+
+def set_meta(key,value):
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO wc2026_meta (key, value) VALUES (%s, %s) "
+                    "ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value",
+                    (key,str(value)))
+            conn.commit()
+    except Exception as e:
+        log.warning("set_meta: %s",e)
 
 def get_recent_finished(limit=20):
     try:
@@ -1873,6 +1987,49 @@ async def cmd_value(u,c):
 # AUTO-UPDATE (resource-aware) + RU COMMAND MENU
 # ============================================================
 
+def _export_elo_to_csv(path="wc2026_elo.csv"):
+    """Дамп wc2026_elo из БД в CSV (для wc2026_simulate.py, который читает CSV)."""
+    import csv as _csv
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT team, elo FROM wc2026_elo ORDER BY team")
+            rows = cur.fetchall()
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        w = _csv.writer(f)
+        w.writerow(["team", "elo"])
+        for t, e in rows:
+            w.writerow([t, float(e)])
+    log.info("Exported %d Elo rows to %s", len(rows), path)
+
+
+def _export_fixtures_to_csv(path="wc2026_fixtures.csv"):
+    """Дамп wc2026_fixtures из БД в CSV ВКЛЮЧАЯ home_score/away_score сыгранных матчей.
+    Симулятор увидит уже сыгранные матчи как факт и не будет их разыгрывать."""
+    import csv as _csv
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT match_date, home, away, host, home_score, away_score "
+                "FROM wc2026_fixtures ORDER BY match_date, home"
+            )
+            rows = cur.fetchall()
+    played = 0
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        w = _csv.writer(f)
+        w.writerow(["date", "home", "away", "host", "home_score", "away_score", "odds_1", "odds_x", "odds_2"])
+        for md, h, a, host, hs, as_ in rows:
+            if hs is not None and as_ is not None:
+                played += 1
+            w.writerow([
+                md.isoformat() if hasattr(md, "isoformat") else (md or ""),
+                h, a, int(host) if host is not None else 0,
+                "" if hs is None else int(hs),
+                "" if as_ is None else int(as_),
+                "", "", "",
+            ])
+    log.info("Exported %d fixtures to %s (%d already played)", len(rows), path, played)
+
+
 async def _run_auto_update(bot):
     global _UPDATING
     api_key=os.environ.get("FOOTBALL_DATA_API_KEY","")
@@ -1890,7 +2047,46 @@ async def _run_auto_update(bot):
         after=count_finished()
         if after<=before:
             log.info("auto-update: no new results (have %d)",after); return
-        log.info("auto-update: %d new results ingested (baseline frozen, no resim)",after-before)
+        log.info("auto-update: %d new results ingested → running re-sim %s", after-before, sims)
+
+        # 1. Дамп свежих Elo + сыгранных счетов из БД в CSV.
+        # Симулятор увидит уже сыгранные матчи как факт (не будет их разыгрывать).
+        try:
+            _export_elo_to_csv()
+            _export_fixtures_to_csv()
+        except Exception as e:
+            log.warning("auto-update: CSV export failed: %s", e)
+
+        # 2. Ре-симуляция 30k прокрутов.
+        try:
+            r1 = subprocess.run(
+                [sys.executable, "-X", "utf8", "wc2026_simulate.py",
+                 "--sims", str(sims), "--out", "wc2026_baseline.json"],
+                capture_output=True, text=True, timeout=900, env=env)
+            if r1.returncode != 0:
+                log.warning("auto-update: simulate.py rc=%s stderr=%s",
+                            r1.returncode, (r1.stderr or "")[:500])
+            else:
+                log.info("auto-update: simulate.py OK (sims=%s)", sims)
+        except Exception as e:
+            log.warning("auto-update: simulate.py exception: %s", e)
+
+        # 3. Заливка нового BASELINE в БД.
+        try:
+            label = f"auto-{date.today().isoformat()}"
+            r2 = subprocess.run(
+                [sys.executable, "-X", "utf8", "wc2026_upload_baseline.py",
+                 "wc2026_baseline.json", "--label", label],
+                capture_output=True, text=True, timeout=120, env=env)
+            if r2.returncode != 0:
+                log.warning("auto-update: upload_baseline.py rc=%s stderr=%s",
+                            r2.returncode, (r2.stderr or "")[:500])
+            else:
+                log.info("auto-update: BASELINE uploaded (label=%s)", label)
+        except Exception as e:
+            log.warning("auto-update: upload_baseline.py exception: %s", e)
+
+        # 4. Перезагружаем в память, сохраняем снапшот, разрешаем прогнозы.
         load_all()
         snapshot_baseline(date.today().isoformat())
         resolve_predictions(date.today())
@@ -1902,6 +2098,16 @@ async def _run_auto_update(bot):
                 await bot.send_message(chat_id=ch,text=p,parse_mode=ParseMode.HTML)
             clear_pending_notification()
             log.info("auto-update: posted forecast-change notification")
+
+        # 5. Один раз в конце группового этапа — постим сводку «как турнир переписал Elo».
+        try:
+            if ch and count_finished()>=72 and get_meta("group_stage_summary_posted")!="1":
+                ok=await _post_elo_summary_to_channel(bot,ch,title_suffix="ПЕРЕД ПЛЕЙ-ОФФ")
+                if ok:
+                    set_meta("group_stage_summary_posted","1")
+                    log.info("auto-update: posted group-stage Elo summary")
+        except Exception as e:
+            log.warning("auto-update: elo-summary post failed: %s",e)
     except Exception as e:
         log.warning("auto-update error: %s",e)
     finally:
@@ -2091,6 +2297,7 @@ def main():
         ("schedule",cmd_schedule),("results",cmd_results),
         ("table",cmd_table),("value",cmd_value),("squad",cmd_squad),
         ("post_preview",cmd_post_preview),("post_forecast",cmd_post_forecast),
+        ("elo_summary",cmd_elo_summary),
     ]
     for name,fn in handlers:
         app.add_handler(CommandHandler(name,fn))
