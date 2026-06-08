@@ -43,16 +43,16 @@ COMP_CODE = "WC"  # FIFA World Cup 2026
 #    Не строгий стрик подряд, а decay-сумма «сюрпризности» за все матчи команды.
 #    Победа над фаворитом + ничья + ещё победа — копит credit, ничья не сбрасывает.
 #    credit ↑ → shrinkage ↓ → форма пропускается в Elo (команда играет реально сильнее).
-ELO_K_BY_ROUND = {"group": 50, "r32": 60, "r16": 65, "qf": 70, "sf": 75, "f": 80, "3rd": 55}
+ELO_K_BY_ROUND = {"group": 50, "r32": 60, "r16": 70, "qf": 80, "sf": 90, "f": 95, "3rd": 65}
 ELO_HFA = 80                  # бонус хозяину поля (host=1)
 DEFAULT_ELO = 1500
 G_CAP = 2.0                   # лимит множителя разницы мячей
 ELO_GAP_DAMP_THRESHOLD = 300  # с какого разрыва дампим K
 ELO_GAP_DAMP_FACTOR = 0.7     # на сколько дампим
 UPSET_THRESHOLD = 0.4         # |result - expected| > 0.4 = сенсация (триггер shrinkage)
-SHRINK_BASE = 0.30            # max shrink при credit=0 (первый сюрприз в карьере)
+SHRINK_BASE = 0.25            # max shrink при credit=0 (первый сюрприз в карьере)
 SHRINK_CREDIT_FULL = 0.8      # credit ≥ этого → shrink=0 (форма подтверждена)
-SURPRISE_DECAY = 0.75         # ослабление credit с каждым новым матчем команды
+SURPRISE_DECAY = 0.85         # ослабление credit с каждым новым матчем команды
 SURPRISE_FLOOR = 0.15         # |r-e| ниже этого не считаем за сюрприз (шум модели)
 XG_SCALE = 0.8                # масштаб для sigmoid от xG-diff
 
