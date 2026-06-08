@@ -113,9 +113,10 @@ def _bracket_blocks():
         return f"{hw} vs {aw} \u2192 <b>{rt(w)}</b>"
     f_h,f_a,f_w=mb["final"]; t3h,t3a,t3w=mb["third_place"]
     out=[]
-    out.append("\U0001f51f <b>1/8 финала (R16):</b>\n"+"".join(f"  \u2022 {fmt(h,a,w)}\n" for h,a,w in mb["r16_matches"]))
-    out.append("\u26bd <b>Четвертьфинал:</b>\n"+"".join(f"  \u2022 {fmt(h,a,w)}\n" for h,a,w in mb["qf_matches"]))
-    out.append("\U0001f31f <b>Полуфинал:</b>\n"+"".join(f"  \u2022 {fmt(h,a,w)}\n" for h,a,w in mb["sf_matches"]))
+    out.append("\U0001f51f <b>1/16 финала (R32) — плей-офф 32-х:</b>\n"+"".join(f"  \u2022 {fmt(h,a,w)}\n" for h,a,w in mb["r16_matches"]))
+    out.append("\u26bd <b>1/8 финала (R16):</b>\n"+"".join(f"  \u2022 {fmt(h,a,w)}\n" for h,a,w in mb["qf_matches"]))
+    out.append("\U0001f3c5 <b>Четвертьфинал (1/4):</b>\n"+"".join(f"  \u2022 {fmt(h,a,w)}\n" for h,a,w in mb["sf_matches"]))
+    out.append("\U0001f31f <b>Полуфинал:</b>\n"+"".join(f"  \u2022 {fmt(h,a,w)}\n" for h,a,w in mb["actual_sf_matches"]))
     out.append(f"\U0001f949 <b>Матч за 3-е место:</b>\n  \u2022 {fmt(t3h,t3a,t3w)}\n\n"
                f"\U0001f945 <b>ФИНАЛ:</b>\n  \u2022 {fmt(f_h,f_a,f_w)}\n\n"
                f"\U0001f3c6 <b>ЧЕМПИОН: {rt(mb['champion'])}</b>\n"
@@ -159,6 +160,12 @@ MODAL_BRACKET = {
         ("France",    "Austria",   "France"),
         ("Portugal",  "Germany",   "Portugal"),
         ("Senegal",   "Australia", "Senegal"),
+    ],
+    # Real semifinal: QF winners paired cross-bracket (1v3, 2v4).
+    # Winners go to final, losers to 3rd-place match.
+    "actual_sf_matches": [
+        ("Argentina", "Portugal", "Argentina"),
+        ("France",    "Senegal",  "France"),
     ],
     "final":       ("Argentina", "France",  "Argentina"),
     "third_place": ("Portugal",  "Senegal", "Portugal"),
@@ -887,7 +894,7 @@ WELCOME = (
     f"{DASH}\n\n"
     "\U0001f4ca <b>ПРОГНОЗЫ</b>\n"
     "\U0001f3c6 /forecast — полный прогноз на весь ЧМ\n"
-    "\U0001f5fa /modal — сетка плей-офф R16\u2192финал\n"
+    "\U0001f5fa /modal — сетка плей-офф R32\u21921/8\u2192ЧФ\u2192ПФ\u2192финал\n"
     "\U0001f947 /baseline — топ-15 претендентов на трофей\n"
     "\U0001f4c2 /history — архив обновлений прогноза\n\n"
     "\u23f1 <b>МАТЧИ</b>\n"
@@ -909,7 +916,7 @@ HELP = (
     f"{SEP}\n\n"
     "\U0001f4ca <b>Прогнозы</b>\n"
     "/forecast — чемпион, финал, полуфиналы, группы\n"
-    "/modal — сетка 1/8\u2192ЧФ\u2192ПФ\u2192финал (каждый матч)\n"
+    "/modal — сетка 1/16\u21921/8\u2192ЧФ\u2192ПФ\u2192финал (каждый матч)\n"
     "/baseline — топ-15 чемпионов + графика\n"
     "/history — архив версий прогноза по датам\n\n"
     "\u23f1 <b>Матчи</b>\n"
@@ -1028,7 +1035,7 @@ async def cmd_forecast(u,c):
             st1.append(
                 f"{mark} <b>{rt(t)}</b> \u2014 Вых {tp.get('P_R32',0)*100:.0f}% · "
                 f"1м {win*100:.0f}% · "
-                f"xО�� {xp.get(t,0):.1f} · \U0001f3c6 {tp.get('P_W',0)*100:.1f}%"
+                f"xОч {xp.get(t,0):.1f} · \U0001f3c6 {tp.get('P_W',0)*100:.1f}%"
             )
         st1.append("")
     parts.append("\n".join(st1).rstrip())
@@ -1822,7 +1829,7 @@ async def cmd_value(u,c):
     bets=value_bets()
     lines=["💰 <b>VALUE-СТАВКИ</b>","<i>Где модель видит перевес над букмекером</i>",SEP,""]
     if not bets:
-        lines.append("Сейчас явных value-ставок нет (или коэффициенты не загруже����ы).")
+        lines.append("Сейчас явных value-ставок нет (или коэффициенты не загружены).")
         lines.append("ℹ️ Нужны коэффы (THE_ODDS_API_KEY) и ближайшие матчи.")
     else:
         nm={"1":"П1","X":"Ничья","2":"П2"}
@@ -1963,7 +1970,7 @@ WELCOME = "\n".join([
     "<i>ИИ-прогнозы на Чемпионат Мира 2026</i>",
     SEP,
     "",
-    "🧠 <b>��ак это работает:</b>",
+    "🧠 <b>Как это работает:</b>",
     "• Elo-рейтинг + калибровка по коэффициентам",
     "• 100 000 симуляций Монте-Карло всего турнира",
     "• Прогноз живой: пересчёт после каждого игрового дня",
@@ -1983,7 +1990,7 @@ WELCOME = "\n".join([
     "🌍 <b>РЕАЛЬНОСТЬ</b> <i>(только факты)</i>",
     "📅 /schedule — расписание матчей (без прогнозов)",
     "📊 /results — реальные счета + сверка с прогнозом",
-    "🏁 /table — таблицы групп по о��кам (фактические)",
+    "🏁 /table — таблицы групп по очкам (фактические)",
     "👥 /squad — реальные составы и их стоимость (Transfermarkt)",
     "",
     "📈 <b>СТАТИСТИКА</b>",
