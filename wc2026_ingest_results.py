@@ -298,7 +298,7 @@ def apply_elo_updates(conn):
     with conn.cursor() as cur:
         cur.execute("""
             SELECT match_date, home, away, home_score, away_score,
-                   COALESCE(host, 0), COALESCE(round, 'group'),
+                   COALESCE(host, '0'), COALESCE(round, 'group'),
                    xg_home, xg_away
             FROM wc2026_fixtures
             WHERE home_score IS NOT NULL
