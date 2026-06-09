@@ -169,8 +169,6 @@ def _bracket_blocks_from(data):
         for m in rd.get("matches", []):
             h = rt(m.get("home")); a = rt(m.get("away")); w = rt(m.get("winner"))
             extra = []
-            if m.get("score"):
-                extra.append(f"<code>{esc(m['score'])}</code>")
             if m.get("adv") is not None:
                 extra.append(f"{float(m['adv'])*100:.0f}%")
             tail = (" · " + " · ".join(extra)) if extra else ""
