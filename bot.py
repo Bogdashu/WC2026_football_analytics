@@ -997,7 +997,7 @@ async def cmd_about(u,c):
 async def cmd_reload(u,c):
     if not is_admin(u.effective_user.id):
         await u.message.reply_text("\u274c Нет доступа."); return
-    await u.message.reply_text("\u23f3 Перечитываю данны������\u2026")
+    await u.message.reply_text("\u23f3 Перечитываю данные\u2026")
     load_all()
     played=BASELINE.get("matches_played",0); total=BASELINE.get("matches_total",72)
     await u.message.reply_text(
@@ -1288,7 +1288,7 @@ async def cmd_group(u,c):
 async def cmd_standings(u,c):
     modal=BASELINE.get("modal_forecast",{}).get("group_top2",{})
     probs=BASELINE.get("tournament_probs",{})
-    lines=["\U0001f3d9 <b>В��Е 12 ГРУПП — ПРОГНОЗ</b>",
+    lines=["\U0001f3d9 <b>ВСЕ 12 ГРУПП — ПРОГНОЗ</b>",
            "<i>\U0001f947\U0001f948 — кто выйдет в плей-офф по версии нейросети</i>",f"{SEP}",""]
     for letter in "ABCDEFGHIJKL":
         pair=modal.get(letter,[])
@@ -1299,7 +1299,7 @@ async def cmd_standings(u,c):
         lines+=["",SEP,"\U0001f949 <b>Лучшие 3-и места — 8 команд в плей-офф:</b>",
                 "<i>в формате на 48 команд проходят 8 лучших сборных с 3-го места</i>",""]
         for t,letter,p in thirds:
-            lines.append(f"  {rt(t)} <code>[{letter}]</code> \u2014 ��анс выхода {p*100:.0f}%")
+            lines.append(f"  {rt(t)} <code>[{letter}]</code> \u2014 Шанс выхода {p*100:.0f}%")
     lines+=["","<i>Подробный расклад: /group F</i>"]
     await u.message.reply_text("\n".join(lines),parse_mode=ParseMode.HTML)
 
@@ -1368,7 +1368,7 @@ async def cmd_history(u,c):
             "Прогноз ещё не обновлялся — турнир не начался.\n"
             "Первые версии появятся после 11 июня.",
             parse_mode=ParseMode.HTML); return
-    lines=["\U0001f4c2 <b>ИСТ��РИЯ ОБНОВЛЕНИЙ ПРОГНОЗА</b>",f"{SEP}",""]
+    lines=["\U0001f4c2 <b>ИСТОРИЯ ОБНОВЛЕНИЙ ПРОГНОЗА</b>",f"{SEP}",""]
     for key,gen_at,played,total in versions:
         date_str=key.replace("baseline_","")
         lines.append(f"\U0001f5d3 <b>{date_str}</b> \u2014 сыграно {played or 0}/{total or 72}")
@@ -1515,7 +1515,7 @@ async def cmd_update(u,c):
     env=os.environ.copy()
     try:
         r1=subprocess.run([sys.executable,"-X","utf8","wc2026_ingest_results.py"],
-                          capture_output=True,text=True,timeout=60,env=env)
+                          capture_output=True,text=True,timeout=180,env=env)
         log.info("ingest: %s",r1.stdout[-500:])
         if r1.returncode!=0:
             await u.message.reply_text(f"\u274c Ошибка загрузки:\n<code>{esc(r1.stderr[-300:])}</code>",parse_mode=ParseMode.HTML); return
@@ -1956,7 +1956,7 @@ async def cmd_results(u,c):
                "Сыгранных матчей пока нет — турнир стартует 11 июня.",
                "ℹ️ Прогнозы: /forecast · расписание: /schedule"]
         await u.message.reply_text("\n".join(lines),parse_mode=ParseMode.HTML); return
-    lines=["📊 <b>РЕЗУЛЬТАТЫ МАТЧЕЙ</b>","<i>🌍 Реальность vs 🤖 прог��оз</i>",SEP,""]
+    lines=["📊 <b>РЕЗУЛЬТАТЫ МАТЧЕЙ</b>","<i>🌍 Реальность vs 🤖 прогноз</i>",SEP,""]
     cor=tot=0
     for d,home,away,hs,as_,host in rows:
         p_h,p_d,p_a=predict_1x2(home,away,str(host)!="1")
@@ -2266,7 +2266,7 @@ def _export_elo_baseline_to_csv(path="wc2026_elo_baseline.csv"):
 
 
 async def cmd_predict_legacy(u,c):
-    """/predict_legacy [N] — следующие N матчей: side-by-side СТАРАЯ vs НО��АЯ.
+    """/predict_legacy [N] — следующие N матчей: side-by-side СТАРАЯ vs НОВАЯ.
     Старая = frozen pre-tournament Elo. Новая = live Elo после ingest-обновлений."""
     if not is_admin(u.effective_user.id):
         await u.message.reply_text("\U0001f512 Только для разработчика."); return
@@ -2609,47 +2609,163 @@ async def cmd_history(u, c):
         lines.append(f"   {pl}/{tot} · 🏆 {esc(ch)} · 👉 /view_{lbl_safe}\n")
     await u.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
 
-async def cmd_view(u, c):
-    cmd_text = u.message.text.split()[0]
-    if cmd_text.startswith("/view_"):
-        lbl = cmd_text.replace("/view_", "").replace("_", "-")
-        if "prematch" in lbl: lbl = lbl.replace("-prematch", "_prematch")
-        if "manual" in lbl: lbl = lbl.replace("-manual", "_manual")
-    else: return
-    
-    import json
+def _list_snapshot_keys():
     with get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT content FROM wc2026_artifacts WHERE key=%s", (f"baseline_{lbl}",))
+            cur.execute("SELECT key FROM wc2026_artifacts WHERE key LIKE 'baseline%'")
+            return [row[0] for row in cur.fetchall()]
+
+def _resolve_snapshot_key(token):
+    # Map a user-typed label to a real artifact key. Returns (key, label) or (None, token).
+    token = (token or "").strip()
+    if token.startswith("/view_"):
+        token = token[len("/view_"):]
+    low = token.lower()
+    if not token or low in ("live", "baseline", "now", "current"):
+        return "baseline", "live"
+    keys = _list_snapshot_keys()
+    labels = {}
+    for k in keys:
+        if k == "baseline":
+            labels["live"] = k
+        elif k.startswith("baseline_"):
+            labels[k[len("baseline_"):]] = k
+    def norm(x):
+        return x.lower().replace("-", "_")
+    nt = norm(token)
+    for lbl, k in labels.items():
+        if norm(lbl) == nt:
+            return k, lbl
+    if token in keys:
+        return token, (token[len("baseline_"):] if token.startswith("baseline_") else "live")
+    cands = [(lbl, k) for lbl, k in labels.items() if norm(lbl).startswith(nt) or nt in norm(lbl)]
+    if cands:
+        cands.sort(key=lambda x: x[0])
+        return cands[-1][1], cands[-1][0]
+    return None, token
+
+def _fmt_bracket_lines(data):
+    # Playoff bracket lines, supporting new (modal_bracket) and old (modal_knockout) formats.
+    out = []
+    br = data.get("modal_bracket") or {}
+    rounds = br.get("rounds") if isinstance(br, dict) else None
+    if rounds:
+        names = {"R32": "1/16 финала", "R16": "1/8 финала", "QF": "1/4 финала",
+                 "SF": "1/2 финала", "F": "Финал"}
+        for rnd in rounds:
+            code = rnd.get("code", "")
+            out.append("")
+            out.append(f"<b>{names.get(code, code)}:</b>")
+            for m in rnd.get("matches", []):
+                h = ru_team(m.get("home", "?")); a = ru_team(m.get("away", "?"))
+                w = m.get("winner"); adv = m.get("adv"); sc = m.get("score")
+                tail = ""
+                if w:
+                    tail += f" ➡️ <b>{esc(ru_team(w))}</b>"
+                if isinstance(adv, (int, float)):
+                    tail += f" ({adv*100:.0f}%)"
+                sct = f" <code>{esc(sc)}</code>" if sc else ""
+                out.append(f"• {esc(h)} — {esc(a)}{sct}{tail}")
+        return out
+    ko = data.get("modal_knockout")
+    if not ko:
+        ko = (data.get("modal_forecast") or {}).get("modal_knockout")
+    if ko:
+        out.append("")
+        out.append("<b>Плей-офф:</b>")
+        for line in ko:
+            out.append("• " + str(line).replace("->", "➡️"))
+    return out
+
+async def cmd_view(u, c):
+    import json
+    text = (u.message.text or "").strip()
+    parts = text.split()
+    cmd = parts[0] if parts else "/view"
+    if cmd.startswith("/view_"):
+        token = cmd[len("/view_"):]
+        extra = parts[1:]
+    else:
+        token = parts[1] if len(parts) > 1 else "live"
+        extra = parts[2:]
+
+    key, lbl = _resolve_snapshot_key(token)
+    if not key:
+        avail = _list_snapshot_keys()
+        labs = sorted(set(("live" if k == "baseline" else k[len("baseline_"):]) for k in avail))
+        shown = "\n".join(f"• <code>{esc(x)}</code>" for x in labs[:30]) or "—"
+        return await u.message.reply_text(
+            f"❌ Версия «<code>{esc(token)}</code>» не найдена.\n\nДоступные версии (см. /snapshots):\n{shown}",
+            parse_mode=ParseMode.HTML)
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT content FROM wc2026_artifacts WHERE key=%s", (key,))
             r = cur.fetchone()
-    if not r: return await u.message.reply_text("❌ Снимок не найден.")
-    
+    if not r:
+        return await u.message.reply_text("❌ Снимок не найден.")
     data = json.loads(r[0]) if isinstance(r[0], str) else r[0]
-    probs = data.get("tournament_probs", {})
-    modal = data.get("modal_forecast", {})
-    if not probs: return
-    
-    champ = modal.get("modal_champion", "?")
-    played = data.get("matches_played", 0)
-    
+    probs = data.get("tournament_probs", {}) or {}
+    pool = list(probs.keys()) or list(ELO.keys())
+
+    # /view <label> TeamA TeamB  -> single match in this snapshot
+    if len(extra) >= 2:
+        ta, tb = _split_two_teams(extra, pool)
+        if not ta or not tb:
+            return await u.message.reply_text("❌ Не удалось распознать команды.")
+        info = _find_match_info(data, ta, tb)
+        ml = [f"🔎 <b>МАТЧ В ПРОГНОЗЕ ({esc(lbl)})</b>",
+              f"🏟 <b>{rt(ta)}</b> — <b>{rt(tb)}</b>", f"{SEP}"]
+        if not info:
+            ml.append("<i>Этого матча нет в данной версии прогноза.</i>")
+        else:
+            ph = (info.get("p_home") or 0)*100; pd = (info.get("p_draw") or 0)*100; pawy = (info.get("p_away") or 0)*100
+            w = info.get("winner"); sc = info.get("score", "?"); adv = info.get("adv")
+            ml.append(f"П1 {ph:.0f}% · Х {pd:.0f}% · П2 {pawy:.0f}%")
+            ml.append(f"🎯 Модальный счёт: <code>{esc(sc)}</code>")
+            if w:
+                advt = f" ({adv*100:.0f}% проходит)" if isinstance(adv, (int, float)) else ""
+                ml.append(f"➡️ Дальше проходит: <b>{rt(w)}</b>{advt}")
+        for part in split_text("\n".join(ml)):
+            await u.message.reply_text(part, parse_mode=ParseMode.HTML)
+        return
+
+    # /view <label> Team  -> one team's stage probabilities
+    if len(extra) == 1:
+        tname = _resolve_team_name(extra[0], pool)
+        if not tname or tname not in probs:
+            return await u.message.reply_text("❌ Команда не найдена в этой версии.")
+        tp = probs.get(tname, {}) or {}
+        order = [("P_R32", "1/16"), ("P_R16", "1/8"), ("P_QF", "1/4"),
+                 ("P_SF", "1/2"), ("P_F", "Финал"), ("P_W", "Чемпион")]
+        tl = [f"🏴 <b>{rt(tname)} — прогноз ({esc(lbl)})</b>", f"{SEP}"]
+        for kk, nm in order:
+            tl.append(f"{nm}: <b>{(tp.get(kk, 0) or 0)*100:.1f}%</b>")
+        for part in split_text("\n".join(tl)):
+            await u.message.reply_text(part, parse_mode=ParseMode.HTML)
+        return
+
+    # /view <label>  -> full archived forecast
+    modal = data.get("modal_forecast", {}) or {}
+    champ = modal.get("modal_champion") or (data.get("modal_bracket") or {}).get("champion") or "?"
+    played = data.get("matches_played", 0); total = data.get("matches_total", 72)
     lines = [
-        f"🕰 <b>АРХИВНЫЙ ПРОГНОЗ: {lbl}</b>",
-        f"<i>Сыграно матчей на момент снимка: {played}/72</i>",
-        f"<i>Модальный чемпион: <b>{ru_team(champ)}</b></i>",
-        "", "🏆 <b>ТОП-10 ПРЕТЕНДЕНТОВ (Шанс на кубок):</b>"
+        f"🕰 <b>АРХИВНАЯ ВЕРСИЯ ПРОГНОЗА: {esc(lbl)}</b>",
+        f"<i>Сыграно матчей на момент снимка: {played}/{total}</i>",
+        f"<i>Модальный чемпион: <b>{esc(ru_team(champ))}</b></i>",
+        "", "🏆 <b>ТОП-10 ПРЕТЕНДЕНТОВ (шанс на кубок):</b>",
     ]
-    
-    top = sorted(probs.items(), key=lambda x: x[1].get("P_W", 0), reverse=True)[:10]
+    top = sorted(probs.items(), key=lambda x: (x[1] or {}).get("P_W", 0), reverse=True)[:10]
     for i, (t, tp) in enumerate(top, 1):
-        pw, pf = tp.get("P_W", 0) * 100, tp.get("P_F", 0) * 100
-        lines.append(f"{i}. <b>{ru_team(t)}</b> — 🥇 {pw:.1f}% (Финал: {pf:.1f}%)")
-        
-    lines += ["", "🏅 <b>МОДАЛЬНЫЙ ПЛЕЙ-ОФФ:</b>"]
-    for match in modal.get("modal_knockout", []):
-        if any(x in match for x in ['R32', 'R16', 'QF', 'SF', 'Final']):
-            lines.append(match.replace('->', '➡️'))
-            
-    await u.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+        tp = tp or {}
+        pw = tp.get("P_W", 0)*100; pf = tp.get("P_F", 0)*100
+        lines.append(f"{i}. <b>{esc(ru_team(t))}</b> — 🥇 {pw:.1f}% (финал: {pf:.1f}%)")
+    lines += _fmt_bracket_lines(data)
+    lines.append("")
+    lines.append(f"<i>Сравнить с другой версией: /compare {esc(lbl)} &lt;другая&gt;</i>")
+    for part in split_text("\n".join(lines)):
+        await u.message.reply_text(part, parse_mode=ParseMode.HTML)
+
 
 async def cmd_compare_top(u, c):
     if not is_admin(u.effective_user.id): return
@@ -2714,8 +2830,9 @@ async def cmd_compare_top(u, c):
     def get_top_deltas(stage_key, dict_a, dict_b, is_group=False, min_delta=0.01):
         shifts = []
         for t in sorted(set(dict_a)|set(dict_b)):
-            ta = (dict_a.get(t, {}).get(stage_key, 0) or 0) * 100
-            tb = (dict_b.get(t, {}).get(stage_key, 0) or 0) * 100
+            va = dict_a.get(t, {}); vb = dict_b.get(t, {})
+            ta = ((va.get(stage_key, 0) if isinstance(va, dict) else 0) or 0) * 100
+            tb = ((vb.get(stage_key, 0) if isinstance(vb, dict) else 0) or 0) * 100
             d = tb - ta
             if abs(d) >= min_delta * 100: shifts.append((t, ta, tb, d))
         shifts.sort(key=lambda r: -abs(r[3]))
@@ -2744,7 +2861,7 @@ async def cmd_compare_top(u, c):
     champ_b = (b.get("modal_forecast") or {}).get("modal_champion")
     if champ_a or champ_b:
         if champ_a == champ_b:
-            lines += ["", f"🏆 Модальный чемпион не ��зменился: <b>{esc(ru_team(champ_a) if champ_a else '?')}</b>"]
+            lines += ["", f"🏆 Модальный чемпион не изменился: <b>{esc(ru_team(champ_a) if champ_a else '?')}</b>"]
         else:
             lines += ["", f"🏆 Чемпион (модель): <b>{esc(ru_team(champ_a) if champ_a else '?')}</b> → <b>{esc(ru_team(champ_b) if champ_b else '?')}</b>"]
 
@@ -2782,6 +2899,8 @@ async def _post_init(app):
         BotCommand("history","📂 История обновлений"),
         BotCommand("snapshots","🗂 Все снимки прогноза"),
         BotCommand("diff","🔄 Сравнить снимки"),
+        BotCommand("view","🕰 Архивная версия прогноза"),
+        BotCommand("compare","🔄 Сравнить две версии"),
         BotCommand("about","ℹ️ О модели"),
         BotCommand("help","❓ Все команды"),
         BotCommand("squad","\U0001f30d \u0420\u0435\u0430\u043b\u044c\u043d\u044b\u0435 \u0441\u043e\u0441\u0442\u0430\u0432\u044b"),
@@ -2825,6 +2944,9 @@ WELCOME = "\n".join([
     "📈 <b>СТАТИСТИКА</b>",
     "🎯 /stats — точность прогнозов нейросети",
     "📂 /history — архив версий прогноза",
+    "🗂 /snapshots — список всех сохранённых версий",
+    "🕰 /view &lt;версия&gt; — открыть архивную версию (можно +команда или +2 команды)",
+    "🔄 /compare live &lt;версия&gt; — сравнить две версии по всем стадиям",
     "",
     "💰 <b>СТАВКИ (только в боте, не в канал)</b>",
     "💰 /value — где модель видит перевес над букмекером",
@@ -2846,7 +2968,7 @@ HELP = "\n".join([
     "/group — расклад группы, например <code>/group F</code>",
     "/team — профиль, например <code>/team Argentina</code>",
     "/today · /tomorrow — матчи дня с прогнозом",
-    "/next [N] — следующие N матчей с п��огнозом",
+    "/next [N] — следующие N матчей с прогнозом",
     "",
     "🌍 <b>Реальность</b> <i>(только факты)</i>",
     "/schedule [N|all] — расписание матчей",
@@ -2857,6 +2979,13 @@ HELP = "\n".join([
     "📈 <b>Статистика</b>",
     "/stats — точность прогнозов нейросети",
     "/history — архив версий прогноза",
+    "/snapshots — список всех сохранённых версий прогноза",
+    "/view &lt;версия&gt; [команда] [и соперник] — открыть архивную версию",
+    "",
+    "🛠 <b>Только для админа</b>",
+    "/update — подгрузить свежие результаты матчей",
+    "/set_live &lt;версия&gt; — сделать версию текущей (live)",
+    "/compare live &lt;версия&gt; [команда соперник] — сравнить версии",
     "",
     "💰 <b>Ставки</b> <i>(только в боте)</i>",
     "/value — value-беты по коэффициентам",
@@ -2895,6 +3024,7 @@ def main():
         ("team",cmd_team),("group",cmd_group),("standings",cmd_standings),
         ("stats",cmd_stats),("history",cmd_history),("snapshots",cmd_snapshots),
         ("diff",cmd_diff),("update",cmd_update),
+        ("view",cmd_view),
         ("schedule",cmd_schedule),("results",cmd_results),
         ("table",cmd_table),("value",cmd_value),("squad",cmd_squad),
         ("post_preview",cmd_post_preview),("post_forecast",cmd_post_forecast),
@@ -2910,6 +3040,16 @@ def main():
     
     from telegram.ext import MessageHandler, filters
     app.add_handler(MessageHandler(filters.Regex(r"^/view_"), cmd_view))
+
+    async def _on_error(update, context):
+        log.exception("Unhandled handler error", exc_info=context.error)
+        try:
+            msg = getattr(update, "effective_message", None)
+            if msg is not None:
+                await msg.reply_text("❌ Внутренняя ошибка при обработке запроса — уже залогировано, попробуйте ещё раз.")
+        except Exception:
+            pass
+    app.add_error_handler(_on_error)
 
     if app.job_queue:
         mh=int(os.environ.get("MORNING_POST_UTC_HOUR","2"))
