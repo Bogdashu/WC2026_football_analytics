@@ -128,11 +128,38 @@ def normalize(name: str) -> str:
 
 
 def api_get(path: str, api_key: str) -> dict:
+    import time, socket, http.client
     url = API_BASE + path
-    req = urllib.request.Request(url, headers={"X-Auth-Token": api_key})
-    log.info("GET %s", url)
-    with urllib.request.urlopen(req, timeout=20) as resp:
-        return json.loads(resp.read())
+    headers = {
+        "X-Auth-Token": api_key,
+        "User-Agent": "WC2026-bot/1.0 (+https://github.com/Bogdashu/WC2026_football_analytics)",
+    }
+    last_err = None
+    for attempt in range(1, 5):
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            log.info("GET %s (attempt %d)", url, attempt)
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                return json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            # 429 = rate limit: respect Retry-After then retry; other HTTP errors are fatal.
+            if e.code == 429 and attempt < 4:
+                try:
+                    wait = int(e.headers.get("Retry-After", "6") or "6")
+                except Exception:
+                    wait = 6
+                log.warning("api_get 429 rate-limited; waiting %ss", wait)
+                time.sleep(wait); last_err = e; continue
+            raise
+        except (urllib.error.URLError, http.client.RemoteDisconnected,
+                http.client.IncompleteRead, ConnectionError,
+                socket.timeout, OSError) as e:
+            # Transient network failure (e.g. RemoteDisconnected) -> exponential backoff retry.
+            last_err = e
+            wait = 2 ** attempt
+            log.warning("api_get transient error (%s); retry in %ss", e, wait)
+            time.sleep(wait)
+    raise RuntimeError(f"api_get failed after retries: {last_err}")
 
 
 def ensure_score_columns(conn):
