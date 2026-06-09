@@ -133,9 +133,11 @@ def api_get(path: str, api_key: str) -> dict:
     headers = {
         "X-Auth-Token": api_key,
         "User-Agent": "WC2026-bot/1.0 (+https://github.com/Bogdashu/WC2026_football_analytics)",
+        "Accept": "application/json",
+        "Connection": "close",
     }
     last_err = None
-    for attempt in range(1, 5):
+    for attempt in range(1, 7):
         try:
             req = urllib.request.Request(url, headers=headers)
             log.info("GET %s (attempt %d)", url, attempt)
@@ -143,7 +145,7 @@ def api_get(path: str, api_key: str) -> dict:
                 return json.loads(resp.read())
         except urllib.error.HTTPError as e:
             # 429 = rate limit: respect Retry-After then retry; other HTTP errors are fatal.
-            if e.code == 429 and attempt < 4:
+            if e.code == 429 and attempt < 6:
                 try:
                     wait = int(e.headers.get("Retry-After", "6") or "6")
                 except Exception:
@@ -156,10 +158,13 @@ def api_get(path: str, api_key: str) -> dict:
                 socket.timeout, OSError) as e:
             # Transient network failure (e.g. RemoteDisconnected) -> exponential backoff retry.
             last_err = e
-            wait = 2 ** attempt
-            log.warning("api_get transient error (%s); retry in %ss", e, wait)
+            wait = min(2 ** attempt, 30)
+            log.warning("api_get transient error (%r); retry %d/6 in %ss", e, attempt, wait)
             time.sleep(wait)
-    raise RuntimeError(f"api_get failed after retries: {last_err}")
+    raise RuntimeError(
+        "api_get failed after retries: " + repr(last_err) +
+        " — likely a temporary football-data.org/Cloudflare outage, or the host is "
+        "dropping the cloud (Railway) egress IP. Run wc2026_check_api.py to diagnose.")
 
 
 def ensure_score_columns(conn):
@@ -403,10 +408,10 @@ def main():
     # Fetch all WC2026 matches
     try:
         data = api_get(f"/competitions/{COMP_CODE}/matches?season=2026", API_KEY)
-    except urllib.error.HTTPError as e:
-        # Try without season filter if API returns error
-        log.warning("Season filter failed (%s), trying without...", e.code)
-        time.sleep(1)
+    except (urllib.error.HTTPError, RuntimeError) as e:
+        # Try without season filter if API returns an error OR dropped the connection
+        log.warning("Season-filtered request failed (%s); retrying without season filter...", e)
+        time.sleep(2)
         data = api_get(f"/competitions/{COMP_CODE}/matches", API_KEY)
 
     matches = data.get("matches", [])
