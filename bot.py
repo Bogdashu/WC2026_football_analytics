@@ -147,7 +147,7 @@ def _parse_modal_knockout_strings(mk):
 
 def _bracket_blocks_from(data):
     """Render the modal knockout bracket from a baseline/snapshot dict as
-    'Команда A ➡️ Команда B → 🏆 Победитель · счёт · NN%' for every stage.
+    'Команда A vs Команда B → Победитель · NN%' for every stage.
     Falls back gracefully for snapshots produced by the old simulator."""
     data = data or {}
     modal = data.get("modal_forecast", {}) or {}
@@ -168,11 +168,13 @@ def _bracket_blocks_from(data):
         lines = []
         for m in rd.get("matches", []):
             h = rt(m.get("home")); a = rt(m.get("away")); w = rt(m.get("winner"))
+            extra = []
+            if m.get("score"):
+                extra.append(f"<code>{esc(m['score'])}</code>")
             if m.get("adv") is not None:
-                tail = f" · {float(m['adv'])*100:.0f}%"
-            else:
-                tail = ""
-            lines.append(f"  {h} vs {a} → 🏆 <b>{w}</b>{tail}")
+                extra.append(f"{float(m['adv'])*100:.0f}%")
+            tail = (" · " + " · ".join(extra)) if extra else ""
+            lines.append(f"  {h} vs {a} → <b>{w}</b>{tail}")
         out.append(f"{emoji} <b>{label}:</b>\n" + "\n".join(lines))
     cp = bracket.get("champion_prob")
     cp_txt = f" · {float(cp)*100:.1f}%" if cp else ""
@@ -970,7 +972,10 @@ HELP = (
 def is_admin(uid): a=os.environ.get("ADMIN_USER_ID",""); return not a or str(uid)==a
 
 async def cmd_start(u,c): await u.message.reply_text(WELCOME,parse_mode=ParseMode.HTML,disable_web_page_preview=True)
-async def cmd_help(u,c):  await u.message.reply_text(HELP,   parse_mode=ParseMode.HTML)
+async def cmd_help(u,c):
+    txt = HELP + (("\n\n" + HELP_ADMIN) if is_admin(u.effective_user.id) else "")
+    for _p in split_text(txt):
+        await u.message.reply_text(_p, parse_mode=ParseMode.HTML)
 
 async def cmd_about(u,c):
     played = BASELINE.get("matches_played",0)
@@ -1441,8 +1446,8 @@ async def cmd_diff(u,c):
         await u.message.reply_text(
             f"\u274c Снимок не найден: <code>{esc(key_b)}</code>",
             parse_mode=ParseMode.HTML); return
-    pa=a.get("tournament_probs",{}) or {}
-    pb=b.get("tournament_probs",{}) or {}
+    pa=a.get("tournament_probs",{}); pa=pa if isinstance(pa,dict) else {}
+    pb=b.get("tournament_probs",{}); pb=pb if isinstance(pb,dict) else {}
     teams=sorted(set(pa)|set(pb))
     deltas=[]
     for t in teams:
@@ -1477,8 +1482,8 @@ async def cmd_diff(u,c):
             lines+=["",f"\U0001f3c6 Модальный чемпион не изменился: <b>{esc(ru_team(champ_a) if champ_a else '?')}</b>"]
         else:
             lines+=["",f"\U0001f3c6 Чемпион (модель): <b>{esc(ru_team(champ_a) if champ_a else '?')}</b> \u2192 <b>{esc(ru_team(champ_b) if champ_b else '?')}</b>"]
-    gpa=a.get("group_positions",{}) or {}
-    gpb=b.get("group_positions",{}) or {}
+    gpa=a.get("group_positions",{}); gpa=gpa if isinstance(gpa,dict) else {}
+    gpb=b.get("group_positions",{}); gpb=gpb if isinstance(gpb,dict) else {}
     if gpa and gpb:
         gshifts=[]
         for t in sorted(set(gpa)|set(gpb)):
@@ -1516,7 +1521,22 @@ async def cmd_update(u,c):
                           capture_output=True,text=True,timeout=180,env=env)
         log.info("ingest: %s",r1.stdout[-500:])
         if r1.returncode!=0:
-            await u.message.reply_text(f"\u274c Ошибка загрузки:\n<code>{esc(r1.stderr[-300:])}</code>",parse_mode=ParseMode.HTML); return
+            err=(r1.stderr or "")[-400:]
+            log.warning("ingest failed: %s", err)
+            low=err.lower()
+            if ("api_get failed" in err) or ("remote end closed" in low) or ("urlerror" in low) or ("timed out" in low) or ("connection" in low) or ("http error" in low):
+                msg=("⚠️ <b>Свежие результаты подгрузить не удалось.</b>\n"
+                     f"{SEP}\n\n"
+                     "Внешний источник результатов (football-data.org) сейчас не отвечает.\n\n"
+                     "ℹ️ Это не ошибка бота. Турнир ещё не начался "
+                     "(первый матч — 11 июня), сыгранных матчей нет (0/72), "
+                     "поэтому подгружать пока нечего.\n\n"
+                     "Когда матчи стартуют, попробуй /update снова. Если источник "
+                     "опять не ответит — это временные перебои на его стороне, повтори позже.")
+            else:
+                msg=("❌ <b>Не удалось обновить результаты.</b>\n"
+                     f"{SEP}\n\n<code>"+esc(err[-300:])+"</code>")
+            await u.message.reply_text(msg,parse_mode=ParseMode.HTML); return
     except Exception as e:
         await u.message.reply_text(f"\u274c Исключение: {esc(str(e))}",parse_mode=ParseMode.HTML); return
     await u.message.reply_text("\u2705 Результаты загружены.\n\u23f3 Обновляю таблицу и прогнозы\u2026 (базовый прогноз заморожен)",parse_mode=ParseMode.HTML)
@@ -2656,13 +2676,14 @@ def _fmt_bracket_lines(data):
             out.append(f"<b>{names.get(code, code)}:</b>")
             for m in rnd.get("matches", []):
                 h = ru_team(m.get("home", "?")); a = ru_team(m.get("away", "?"))
-                w = m.get("winner"); adv = m.get("adv")
+                w = m.get("winner"); adv = m.get("adv"); sc = m.get("score")
                 tail = ""
                 if w:
-                    tail += f" → 🏆 <b>{esc(ru_team(w))}</b>"
+                    tail += f" ➡️ <b>{esc(ru_team(w))}</b>"
                 if isinstance(adv, (int, float)):
-                    tail += f" · {adv*100:.0f}%"
-                out.append(f"• {esc(h)} vs {esc(a)}{tail}")
+                    tail += f" ({adv*100:.0f}%)"
+                sct = f" <code>{esc(sc)}</code>" if sc else ""
+                out.append(f"• {esc(h)} — {esc(a)}{sct}{tail}")
         return out
     ko = data.get("modal_knockout")
     if not ko:
@@ -2765,12 +2786,19 @@ async def cmd_view(u, c):
 
 
 async def cmd_compare_top(u, c):
-    if not is_admin(u.effective_user.id): return
     if len(c.args) < 2:
         await u.message.reply_text(
-            "Использование:\n"
-            "  /compare live 2026-06-09_prematch — по всем стадиям\n"
-            "  /compare live 2026-06-09_prematch Аргентина Бразилия — конкретный матч")
+            "🔍 <b>Сравнение версий прогноза</b>\n"
+            f"{SEP}\n\n"
+            "<b>По всем стадиям:</b>\n"
+            "<code>/compare &lt;версия1&gt; &lt;версия2&gt;</code>\n"
+            "Пример: <code>/compare live 2026-06-09_prematch</code>\n\n"
+            "<b>По конкретному матчу:</b>\n"
+            "<code>/compare &lt;версия1&gt; &lt;версия2&gt; &lt;команда&gt; &lt;соперник&gt;</code>\n"
+            "Пример: <code>/compare live prematch_FROZEN Аргентина Бразилия</code>\n\n"
+            "<i>« live » — текущий прогноз. Ярлыки версий: /snapshots. "
+            "Нужна быстрая разница только по чемпиону — /diff.</i>",
+            parse_mode=ParseMode.HTML)
         return
 
     key_a = c.args[0]
@@ -2798,11 +2826,19 @@ async def cmd_compare_top(u, c):
     lbl_a0 = key_a.replace("baseline_","") if key_a!="baseline" else "live"
     lbl_b0 = key_b.replace("baseline_","") if key_b!="baseline" else "live"
     if match_tokens:
-        pool = (list((a.get("tournament_probs") or {}).keys())
-                or list((b.get("tournament_probs") or {}).keys()) or list(ELO.keys()))
-        ta, tb = _split_two_teams(match_tokens, pool)
+        def _keys(x): return list(x.keys()) if isinstance(x, dict) else []
+        pool = (_keys(a.get("tournament_probs")) or _keys(b.get("tournament_probs")) or list(ELO.keys()))
+        ta = tb = None
+        for _end in range(len(match_tokens), 1, -1):
+            ta, tb = _split_two_teams(match_tokens[:_end], pool)
+            if ta and tb:
+                break
         if not ta or not tb:
-            return await u.message.reply_text("❌ Не удалось распознать команды для сравнения матча.")
+            return await u.message.reply_text(
+                "❌ Не удалось распознать команды.\n"
+                "Формат: <code>/compare live &lt;версия&gt; Аргентина Бразилия</code>\n"
+                "(только два названия команд, без лишних слов)",
+                parse_mode=ParseMode.HTML)
         ia = _find_match_info(a, ta, tb)
         ib = _find_match_info(b, ta, tb)
         def _mline(info):
@@ -2819,10 +2855,11 @@ async def cmd_compare_top(u, c):
             await u.message.reply_text(p, parse_mode=ParseMode.HTML)
         return
 
-    pa = a.get("tournament_probs", {}) or {}
-    pb = b.get("tournament_probs", {}) or {}
-    gpa = a.get("group_positions", {}) or {}
-    gpb = b.get("group_positions", {}) or {}
+    def _asdict(x): return x if isinstance(x, dict) else {}
+    pa = _asdict(a.get("tournament_probs"))
+    pb = _asdict(b.get("tournament_probs"))
+    gpa = _asdict(a.get("group_positions"))
+    gpb = _asdict(b.get("group_positions"))
 
     def get_top_deltas(stage_key, dict_a, dict_b, is_group=False, min_delta=0.01):
         shifts = []
@@ -2976,18 +3013,39 @@ HELP = "\n".join([
     "📈 <b>Статистика</b>",
     "/stats — точность прогнозов нейросети",
     "/history — архив версий прогноза",
-    "/snapshots — список всех сохранённых версий прогноза",
-    "/view &lt;версия&gt; [команда] [и соперник] — открыть архивную версию",
     "",
-    "🛠 <b>Только для админа</b>",
-    "/update — подгрузить свежие результаты матчей",
-    "/set_live &lt;версия&gt; — сделать версию текущей (live)",
-    "/compare live &lt;версия&gt; [команда соперник] — сравнить версии",
+    "🔍 <b>Сравнение и архив версий</b>",
+    "📌 <i>Версия — это сохранённый «снимок» прогноза. « live » — текущий прогноз.</i>",
+    "/snapshots — список всех версий и их ярлыки (начни отсюда)",
+    "/view &lt;версия&gt; [команда] [соперник] — открыть версию целиком; с командой — её расклад, с двумя — прогноз на матч",
+    "/diff &lt;версия&gt; [&lt;версия2&gt;] — быстрая разница по шансам на чемпионство (1 ярлык = с текущим, 2 = между собой)",
+    "/compare live &lt;версия&gt; [команда соперник] — подробное сравнение по всем стадиям; добавь две команды — сравнит прогноз на матч",
+    "<i>Как пользоваться: /snapshots → выбери ярлык → /view посмотреть, /diff быстро или /compare подробно.</i>",
     "",
     "💰 <b>Ставки</b> <i>(только в боте)</i>",
     "/value — value-беты по коэффициентам",
     "",
     "ℹ️ /about · ❓ /help",
+])
+
+HELP_ADMIN = "\n".join([
+    "🛠 <b>Только для админа</b> <i>(этот блок виден только тебе)</i>",
+    SEP,
+    "",
+    "📥 <b>Данные и прогноз</b>",
+    "/update — подгрузить свежие результаты матчей и пересверить прогноз (базовый прогноз замораживается). Пример: <code>/update</code>",
+    "/set_live &lt;версия&gt; — сделать сохранённый снимок текущим (live). Пример: <code>/set_live prematch_FROZEN</code>",
+    "/reload — перечитать прогноз из БД без подгрузки результатов. Пример: <code>/reload</code>",
+    "",
+    "📊 <b>Elo-рейтинги</b>",
+    "/elo_summary — насколько Elo команд изменились с базовых значений. Пример: <code>/elo_summary</code>",
+    "",
+    "📣 <b>Публикация в канал</b>",
+    "/post_preview — предпросмотр поста прогноза (без отправки). Пример: <code>/post_preview</code>",
+    "/post_forecast — опубликовать прогноз в канал. Пример: <code>/post_forecast</code>",
+    "",
+    "🧪 <b>Служебные</b>",
+    "/sim_new · /sim_legacy · /predict_legacy — ручные прогоны симулятора/прогноза. Обычно не нужны — расчёт идёт автоматически.",
 ])
 
 
