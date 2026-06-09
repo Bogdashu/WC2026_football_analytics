@@ -602,6 +602,44 @@ def run(args):
             ratings[h] = oh
             ratings[a] = oa
 
+    def modal_match_detail(h, a, round_name="R16", neutral=True):
+        """Deterministic detail for one modal match: winner, advance prob,
+        modal scoreline, and calibrated 1X2 (same legend lift as ko_winner_modal)."""
+        hb = _legend_bonus(h, round_name, args.legend_factor)
+        ab = _legend_bonus(a, round_name, args.legend_factor)
+        ensure_elo(h, ratings, args.default_elo)
+        ensure_elo(a, ratings, args.default_elo)
+        oh, oa = ratings[h], ratings[a]
+        if hb:
+            ratings[h] = oh + hb
+        if ab:
+            ratings[a] = oa + ab
+        try:
+            p = match_probs(h, a, ratings, gm, calib, neutral=neutral, default_elo=args.default_elo)
+            ph = float(p.get("p_home", 0.0)); pa = float(p.get("p_away", 0.0))
+            pd = float(p.get("p_draw", max(0.0, 1.0 - ph - pa)))
+            edge = ratings[h] - ratings[a]
+            p_home_tb = max(0.25, min(0.75, 0.5 + 0.0005 * edge))
+            adv_home = ph + pd * p_home_tb
+            adv_away = pa + pd * (1.0 - p_home_tb)
+            if adv_home >= adv_away:
+                winner, adv = h, adv_home
+            else:
+                winner, adv = a, adv_away
+            lh, la = _lambdas(h, a, ratings, gm, neutral, args.default_elo)
+            rho = float(gm.get("rho", -0.04))
+            Mtx = np.asarray(M._score_matrix(lh, la, rho), dtype=float)
+            idx = int(np.argmax(Mtx)); n = Mtx.shape[0]
+            sh, sa = int(idx // n), int(idx % n)
+            return {
+                "home": h, "away": a, "winner": winner,
+                "adv": round(float(adv), 4), "score": f"{sh}:{sa}",
+                "p_home": round(ph, 4), "p_draw": round(pd, 4), "p_away": round(pa, 4),
+            }
+        finally:
+            ratings[h] = oh
+            ratings[a] = oa
+
     # Build a modal R32 via the simplified pairing used in MC averaging:
     # take winners (1st), runners-up (2nd), and top 8 third-placed by mean pts.
     third_candidates = []
@@ -620,20 +658,69 @@ def run(args):
     print(f"\nModal R32 field ({len(modal_r32)} teams, FIFA bracket order): " + ", ".join(modal_r32))
 
     print("\nModal knockout path (deterministic argmax of model probabilities):")
+    modal_scores = {}
+    modal_matches = {}
+    modal_bracket_rounds = []
+    modal_knockout = []
     current = list(modal_r32)
-    for round_name, label in (("R16", "R16"), ("QF", "QF"), ("SF", "SF"), ("F", "Final"), ("W", "Champion")):
+    # internal_round drives the legend-bonus multiplier and equals the round the
+    # WINNERS advance to; play_code names the round actually being PLAYED so the
+    # bot can label stages correctly: R32=1/16, R16=1/8, QF=1/4, SF=1/2, F=final.
+    for internal_round, play_code in (("R16", "R32"), ("QF", "R16"), ("SF", "QF"), ("F", "SF"), ("W", "F")):
+        matches = []
         nxt = []
         for i in range(0, len(current), 2):
             h, a = current[i], current[i + 1]
-            w = ko_winner_modal(h, a, round_name)
-            nxt.append(w)
-        if round_name == "W":
-            print(f"  {label}: {nxt[0]}")
-        else:
-            pairs = [f"{current[i]} vs {current[i+1]} -> {nxt[i // 2]}" for i in range(0, len(current), 2)]
-            print(f"  -> {label} ({len(nxt)}): " + "; ".join(pairs))
+            d = modal_match_detail(h, a, round_name=internal_round, neutral=True)
+            matches.append(d)
+            nxt.append(d["winner"])
+            modal_scores[f"{h}|{a}"] = d["score"]
+            modal_matches[f"{h}|{a}"] = {
+                "stage": play_code,
+                "p_home": d["p_home"], "p_draw": d["p_draw"], "p_away": d["p_away"],
+                "score": d["score"], "winner": d["winner"], "adv": d["adv"],
+            }
+        modal_bracket_rounds.append({"code": play_code, "matches": matches})
+        pairs = [f"{m['home']} vs {m['away']} -> {m['winner']}" for m in matches]
+        modal_knockout.append(f"{play_code} ({len(matches)}): " + "; ".join(pairs))
+        print(f"  -> {play_code} ({len(matches)}): " + "; ".join(pairs))
         current = nxt
     modal_champion = current[0]
+    print(f"  Champion: {modal_champion}")
+
+    # ------ per-match modal detail for the group stage (1X2 + modal score) ------
+    # Lets the bot show & compare predictions on individual group matches, and
+    # feeds the "most likely score" line on channel cards.
+    matches_total = len(fixtures)
+    matches_played = sum(
+        1 for f in fixtures
+        if f.get("hs") is not None and f.get("as_") is not None
+    )
+    for f in fixtures:
+        h, a = f["home"], f["away"]
+        neutral = (f["host"] == 0)
+        try:
+            p = match_probs(h, a, ratings, gm, calib, neutral=neutral, default_elo=args.default_elo)
+            ph = float(p.get("p_home", 0.0)); pa = float(p.get("p_away", 0.0))
+            pd = float(p.get("p_draw", max(0.0, 1.0 - ph - pa)))
+            lh, la = _lambdas(h, a, ratings, gm, neutral, args.default_elo)
+            rho = float(gm.get("rho", -0.04))
+            Mtx = np.asarray(M._score_matrix(lh, la, rho), dtype=float)
+            idx = int(np.argmax(Mtx)); n = Mtx.shape[0]
+            sh, sa = int(idx // n), int(idx % n)
+            score = f"{sh}:{sa}"
+        except Exception:
+            ph = pd = pa = 0.0
+            score = ""
+        if f.get("hs") is not None and f.get("as_") is not None:
+            score = f"{int(f['hs'])}:{int(f['as_'])}"
+        modal_matches[f"{h}|{a}"] = {
+            "stage": "group",
+            "p_home": round(ph, 4), "p_draw": round(pd, 4), "p_away": round(pa, 4),
+            "score": score,
+        }
+        if score:
+            modal_scores.setdefault(f"{h}|{a}", score)
 
     # ------ save baseline ------
     out = {
@@ -660,6 +747,16 @@ def run(args):
             "group_top2": {g: list(p) for g, p in modal_top2.items()},
             "modal_champion": modal_champion,
         },
+        "modal_bracket": {
+            "rounds": modal_bracket_rounds,
+            "champion": modal_champion,
+            "champion_prob": round(reach[modal_champion]["W"] / sims, 4),
+        },
+        "modal_knockout": modal_knockout,
+        "modal_scores": modal_scores,
+        "modal_matches": modal_matches,
+        "matches_played": matches_played,
+        "matches_total": matches_total,
         "legend_factor": args.legend_factor,
         "surprise_rate": args.surprise,
         "placeholders_defaulted": placeholders,
