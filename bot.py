@@ -46,6 +46,19 @@ SIMS_DISPLAY  = 100000
 SEP  = "\u2501" * 22          # ━━━ heavy rule
 DASH = "\u2500" * 22          # ─── light rule
 
+# Stage ladder (fixes the old R32/R16 off-by-one). Codes name the round actually
+# PLAYED: R32 = 1/16 финала, R16 = 1/8, QF = 1/4, SF = 1/2, F = финал.
+STAGE_LABELS = {
+    "R32": "1/16 финала",
+    "R16": "1/8 финала",
+    "QF":  "1/4 финала (четвертьфинал)",
+    "SF":  "1/2 финала (полуфинал)",
+    "F":   "Финал",
+    "W":   "Чемпион",
+}
+STAGE_EMOJI = {"R32":"🔟","R16":"⚽","QF":"🏅","SF":"🥈","F":"🏆","W":"👑"}
+STAGE_PROB_KEY = {"R32":"P_R32","R16":"P_R16","QF":"P_QF","SF":"P_SF","F":"P_F","W":"P_W"}
+
 RU_MONTHS = {
     1:"января",2:"февраля",3:"марта",4:"апреля",
     5:"мая",6:"июня",7:"июля",8:"августа",
@@ -105,23 +118,72 @@ def group_xpoints(letter):
             xp[a]+=3*p_h+p_d
             xp[b]+=3*p_a+p_d
     return xp
-def _bracket_blocks():
-    modal = BASELINE.get("modal_forecast", {})
-    champ = modal.get("modal_champion", "?")
-    
-    out=[]
-    r16_matches = [m for m in modal.get("modal_knockout", []) if m.startswith("R16")]
-    if r16_matches:
-        out.append("🔟 <b>1/16 финала (R32):</b>\n" + "\n".join(f"  • {m.replace('R16 (16): ', '').replace('->', '➡️')}" for m in r16_matches))
-    qf_matches = [m for m in modal.get("modal_knockout", []) if m.startswith("QF")]
-    if qf_matches:
-        out.append("⚽ <b>1/8 финала (R16):</b>\n" + "\n".join(f"  • {m.replace('QF (8): ', '').replace('->', '➡️')}" for m in qf_matches))
-    sf_matches = [m for m in modal.get("modal_knockout", []) if m.startswith("SF")]
-    if sf_matches:
-        out.append("🏅 <b>Четвертьфинал:</b>\n" + "\n".join(f"  • {m.replace('SF (4): ', '').replace('->', '➡️')}" for m in sf_matches))
-    
-    out.append(f"\n🌟 <b>Полуфиналы, Финал и Чемпион:</b>\nПодробнее в полном прогнозе.")
+def _parse_modal_knockout_strings(mk):
+    """Parse the string form 'CODE (n): A vs B -> W; ...' into bracket rounds.
+    Tolerates both the new clean codes (R32/R16/QF/SF/F) and legacy labels."""
+    legacy = {"R16":"R32","QF":"R16","SF":"QF","Final":"SF","F":"F","W":"W","R32":"R32"}
+    rounds = []
+    for line in mk:
+        if not isinstance(line, str) or ":" not in line:
+            continue
+        head, _, body = line.partition(":")
+        code = head.strip().split()[0] if head.strip() else ""
+        code = legacy.get(code, code)
+        matches = []
+        for part in body.split(";"):
+            part = part.strip()
+            if not part or "->" not in part:
+                continue
+            pair, _, w = part.partition("->")
+            w = w.strip()
+            ha = pair.split(" vs ")
+            h = ha[0].strip() if ha else "?"
+            a = ha[1].strip() if len(ha) > 1 else "?"
+            matches.append({"home": h, "away": a, "winner": w})
+        if matches:
+            rounds.append({"code": code, "matches": matches})
+    return rounds
+
+
+def _bracket_blocks_from(data):
+    """Render the modal knockout bracket from a baseline/snapshot dict as
+    'Команда A ➡️ Команда B → 🏆 Победитель · счёт · NN%' for every stage.
+    Falls back gracefully for snapshots produced by the old simulator."""
+    data = data or {}
+    modal = data.get("modal_forecast", {}) or {}
+    bracket = data.get("modal_bracket") or {}
+    rounds = bracket.get("rounds") or []
+    champ = bracket.get("champion") or modal.get("modal_champion", "?")
+    if not rounds:
+        mk = data.get("modal_knockout") or modal.get("modal_knockout") or []
+        rounds = _parse_modal_knockout_strings(mk)
+    if not rounds:
+        return ["<i>Полная сетка плей-офф появится после следующего прогона "
+                "симулятора (этот снимок сделан старой версией).</i>"]
+    out = []
+    for rd in rounds:
+        code = rd.get("code", "")
+        label = STAGE_LABELS.get(code, code or "Плей-офф")
+        emoji = STAGE_EMOJI.get(code, "•")
+        lines = []
+        for m in rd.get("matches", []):
+            h = rt(m.get("home")); a = rt(m.get("away")); w = rt(m.get("winner"))
+            extra = []
+            if m.get("score"):
+                extra.append(f"<code>{esc(m['score'])}</code>")
+            if m.get("adv") is not None:
+                extra.append(f"{float(m['adv'])*100:.0f}%")
+            tail = (" · " + " · ".join(extra)) if extra else ""
+            lines.append(f"  {h} ➡️ {a} → 🏆 <b>{w}</b>{tail}")
+        out.append(f"{emoji} <b>{label}:</b>\n" + "\n".join(lines))
+    cp = bracket.get("champion_prob")
+    cp_txt = f" · {float(cp)*100:.1f}%" if cp else ""
+    out.append(f"👑 <b>ЧЕМПИОН: {rt(champ)}</b>{cp_txt}")
     return out
+
+
+def _bracket_blocks():
+    return _bracket_blocks_from(BASELINE)
 
 
 
@@ -1181,8 +1243,8 @@ async def cmd_team(u,c):
            "<i>Elo — сила команды; проценты — шанс пройти каждый раунд (прогноз модели).</i>",
            f"{SEP}",""]
     if tp:
-        rounds=[("Выход из группы","P_R32"),("1/8 финала","P_R16"),
-                ("1/4 финала","P_QF"),("Полуфинал","P_SF"),
+        rounds=[("Плей-офф 1/16","P_R32"),("1/8 финала","P_R16"),
+                ("1/4 финала","P_QF"),("Полуфинал 1/2","P_SF"),
                 ("Финал","P_F"),("\U0001f3c6 Чемпион","P_W")]
         lines.append("\U0001f4ca <b>Вероятности по раундам:</b>")
         for lbl,key in rounds:
@@ -1306,7 +1368,7 @@ async def cmd_history(u,c):
             "Прогноз ещё не обновлялся — турнир не начался.\n"
             "Первые версии появятся после 11 июня.",
             parse_mode=ParseMode.HTML); return
-    lines=["\U0001f4c2 <b>ИСТОРИЯ ОБНОВЛЕНИЙ ПРОГНОЗА</b>",f"{SEP}",""]
+    lines=["\U0001f4c2 <b>ИСТ��РИЯ ОБНОВЛЕНИЙ ПРОГНОЗА</b>",f"{SEP}",""]
     for key,gen_at,played,total in versions:
         date_str=key.replace("baseline_","")
         lines.append(f"\U0001f5d3 <b>{date_str}</b> \u2014 сыграно {played or 0}/{total or 72}")
@@ -1507,16 +1569,20 @@ async def _post_forecast_to_channel(bot,ch):
     g2=modal.get("group_top2",{})
     top5=sorted(probs.items(),key=lambda x:x[1]["P_W"],reverse=True)[:5]
     medals=["🥇","🥈","🥉","4️⃣","5️⃣"]
-    champ = modal.get("modal_champion", "?")
+    bracket = BASELINE.get("modal_bracket") or {}
+    champ = bracket.get("champion") or modal.get("modal_champion", "?")
     f_h, f_a, f_w, f_l = "?", "?", "?", "?"
-    for m in modal.get("modal_knockout", []):
-        if m.startswith("Final (2):"):
-            parts = m.replace("Final (2): ","").split(" -> ")
-            if len(parts)==2:
-                teams = parts[0].split(" vs ")
-                if len(teams)==2:
-                    f_h, f_a, f_w = teams[0], teams[1], parts[1]
-                    f_l = f_a if f_w == f_h else f_h
+    # The FINAL is the round whose code is "F" (exactly one match). The old code
+    # mistook the semifinal ("Final (2)" in legacy output) for the final.
+    fin_rounds = [rd for rd in bracket.get("rounds", []) if rd.get("code") == "F"]
+    if not fin_rounds:
+        fin_rounds = _parse_modal_knockout_strings(
+            BASELINE.get("modal_knockout") or modal.get("modal_knockout") or [])
+        fin_rounds = [rd for rd in fin_rounds if rd.get("code") == "F"]
+    if fin_rounds and fin_rounds[0].get("matches"):
+        fm = fin_rounds[0]["matches"][0]
+        f_h, f_a, f_w = fm.get("home", "?"), fm.get("away", "?"), fm.get("winner", "?")
+        f_l = f_a if f_w == f_h else f_h
     text=(
         "🌍 <b>ПРОГНОЗ НА ЧМ-2026</b>\n"
         f"<i>Нейросеть сыграла турнир {num_sp(SIMS_DISPLAY)} раз</i>\n"
@@ -1681,6 +1747,18 @@ def ensure_score_columns():
         log.info("Ensured home_score/away_score columns")
     except Exception as e:
         log.warning("ensure_score_columns: %s",e)
+
+def ensure_artifacts_columns():
+    """Ensure wc2026_artifacts has updated_at so /history and /set_live order snapshots correctly."""
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("ALTER TABLE wc2026_artifacts "
+                            "ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()")
+            conn.commit()
+        log.info("Ensured wc2026_artifacts.updated_at column")
+    except Exception as e:
+        log.warning("ensure_artifacts_columns: %s",e)
 
 def third_place_qualifiers():
     """Model estimate of the 8 best third-placed teams that reach the knockouts."""
@@ -2426,6 +2504,58 @@ async def cmd_sim_new(u,c):
 # АРХИВ И СУПЕР-СРАВНЕНИЕ
 # ============================================================
 
+def _resolve_team_name(name, pool):
+    """Resolve a RU/EN team name (fuzzy) against a pool of canonical EN names."""
+    if not name:
+        return None
+    name = name.strip()
+    if name in pool:
+        return name
+    low = {t.lower(): t for t in pool}
+    if name.lower() in low:
+        return low[name.lower()]
+    rv = {ru_team(t).lower(): t for t in pool}
+    if name.lower() in rv:
+        return rv[name.lower()]
+    cand = difflib.get_close_matches(name, list(pool), n=1, cutoff=0.6)
+    if cand:
+        return cand[0]
+    candr = difflib.get_close_matches(name.lower(), list(rv), n=1, cutoff=0.6)
+    if candr:
+        return rv[candr[0]]
+    return next((t for t in pool
+                 if name.lower() in t.lower() or name.lower() in ru_team(t).lower()), None)
+
+
+def _split_two_teams(tokens, pool):
+    """Split word tokens into two team names (each may be multi-word)."""
+    for i in range(1, len(tokens)):
+        a = _resolve_team_name(" ".join(tokens[:i]), pool)
+        b = _resolve_team_name(" ".join(tokens[i:]), pool)
+        if a and b:
+            return a, b
+    return None, None
+
+
+def _find_match_info(data, a, b):
+    """Find a modal prediction for a vs b in a snapshot dict.
+    Returns a dict with _home/_away/_stage plus p_home/p_draw/p_away/score/winner/adv."""
+    data = data or {}
+    for rd in (data.get("modal_bracket") or {}).get("rounds", []):
+        for m in rd.get("matches", []):
+            if {m.get("home"), m.get("away")} == {a, b}:
+                d = dict(m)
+                d["_home"] = m.get("home"); d["_away"] = m.get("away"); d["_stage"] = rd.get("code")
+                return d
+    mm = data.get("modal_matches", {}) or {}
+    for key in (f"{a}|{b}", f"{b}|{a}"):
+        if key in mm:
+            d = dict(mm[key]); kh, ka = key.split("|", 1)
+            d["_home"] = kh; d["_away"] = ka; d["_stage"] = mm[key].get("stage")
+            return d
+    return None
+
+
 async def cmd_reload(u, c):
     if not is_admin(u.effective_user.id): return
     load_all()
@@ -2447,18 +2577,36 @@ async def cmd_set_live(u, c):
     await u.message.reply_text(f"✅ Снимок {lbl} загружен в бота как основной!")
 
 async def cmd_history(u, c):
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT key, updated_at FROM wc2026_artifacts WHERE key LIKE 'baseline_%' ORDER BY updated_at DESC LIMIT 20")
-            rows = cur.fetchall()
-    if not rows: return await u.message.reply_text("Архив пуст.")
-    lines = ["📜 <b>АРХИВ ПРОГНОЗОВ</b>", "<i>Нажми на команду, чтобы посмотреть прогноз</i>", ""]
-    for k, dt in rows:
+    rows = []
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT key, updated_at, content->>'matches_played', "
+                    "       content->>'matches_total', "
+                    "       content->'modal_forecast'->>'modal_champion' "
+                    "FROM wc2026_artifacts WHERE key LIKE 'baseline_%' "
+                    "ORDER BY updated_at DESC NULLS LAST, key DESC LIMIT 20")
+                rows = cur.fetchall()
+    except Exception as e:
+        log.warning("cmd_history: %s", e)
+    if not rows:
+        return await u.message.reply_text("📂 Архив пуст. Прогнозы появятся после первого прогона.")
+    lines = ["📜 <b>АРХИВ ПРОГНОЗОВ</b>",
+             "<i>Нажми на команду, чтобы открыть архивный прогноз. "
+             "Можно уточнить команду или матч: /view_&lt;label&gt; Аргентина Бразилия</i>", ""]
+    for k, dt, played, total, champ in rows:
         lbl = k.replace("baseline_", "")
-        if lbl in ['legacy', 'legacy_fixed']: continue
+        if lbl in ('legacy', 'legacy_fixed'): continue
         lbl_safe = lbl.replace("-", "_")
-        lines.append(f"📅 {dt.strftime('%d.%m.%Y %H:%M')} UTC")
-        lines.append(f"👉 /view_{lbl_safe} (<code>{lbl}</code>)\n")
+        when = (dt.strftime('%d.%m.%Y %H:%M') + " UTC") if dt else ""
+        pl = int(played) if played else 0
+        tot = int(total) if total else 72
+        ch = ru_team(champ) if champ else "?"
+        head = f"📅 <code>{esc(lbl)}</code>"
+        if when: head += f" · {when}"
+        lines.append(head)
+        lines.append(f"   {pl}/{tot} · 🏆 {esc(ch)} · 👉 /view_{lbl_safe}\n")
     await u.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
 
 async def cmd_view(u, c):
@@ -2505,12 +2653,16 @@ async def cmd_view(u, c):
 
 async def cmd_compare_top(u, c):
     if not is_admin(u.effective_user.id): return
-    if len(c.args) != 2:
-        await u.message.reply_text("Использование: /compare live 2026-06-09_prematch")
+    if len(c.args) < 2:
+        await u.message.reply_text(
+            "Использование:\n"
+            "  /compare live 2026-06-09_prematch — по всем стадиям\n"
+            "  /compare live 2026-06-09_prematch Аргентина Бразилия — конкретный матч")
         return
-    
+
     key_a = c.args[0]
     key_b = c.args[1]
+    match_tokens = c.args[2:]
     if key_a == "live": key_a = "baseline"
     elif not key_a.startswith("baseline"): key_a = f"baseline_{key_a}"
     if key_b == "live": key_b = "baseline"
@@ -2529,7 +2681,31 @@ async def cmd_compare_top(u, c):
         
     a = json.loads(ra[0]) if isinstance(ra[0], str) else ra[0]
     b = json.loads(rb[0]) if isinstance(rb[0], str) else rb[0]
-    
+
+    lbl_a0 = key_a.replace("baseline_","") if key_a!="baseline" else "live"
+    lbl_b0 = key_b.replace("baseline_","") if key_b!="baseline" else "live"
+    if match_tokens:
+        pool = (list((a.get("tournament_probs") or {}).keys())
+                or list((b.get("tournament_probs") or {}).keys()) or list(ELO.keys()))
+        ta, tb = _split_two_teams(match_tokens, pool)
+        if not ta or not tb:
+            return await u.message.reply_text("❌ Не удалось распознать команды для сравнения матча.")
+        ia = _find_match_info(a, ta, tb)
+        ib = _find_match_info(b, ta, tb)
+        def _mline(info):
+            if not info: return "  <i>нет прогноза в этом снимке</i>"
+            ph=(info.get("p_home") or 0)*100; pd=(info.get("p_draw") or 0)*100; pawy=(info.get("p_away") or 0)*100
+            w=info.get("winner"); sc=info.get("score","?")
+            wt=f" · ➡️ {rt(w)}" if w else ""
+            return f"  П1 {ph:.0f}% · Х {pd:.0f}% · П2 {pawy:.0f}% · 🎯 <code>{esc(sc)}</code>{wt}"
+        mlines=["🔄 <b>СРАВНЕНИЕ МАТЧА</b>",
+                f"🏟 <b>{rt(ta)}</b> — <b>{rt(tb)}</b>", f"{SEP}",
+                f"📌 <code>{esc(lbl_a0)}</code>:", _mline(ia),
+                f"📌 <code>{esc(lbl_b0)}</code>:", _mline(ib)]
+        for p in split_text("\n".join(mlines)):
+            await u.message.reply_text(p, parse_mode=ParseMode.HTML)
+        return
+
     pa = a.get("tournament_probs", {}) or {}
     pb = b.get("tournament_probs", {}) or {}
     gpa = a.get("group_positions", {}) or {}
@@ -2568,7 +2744,7 @@ async def cmd_compare_top(u, c):
     champ_b = (b.get("modal_forecast") or {}).get("modal_champion")
     if champ_a or champ_b:
         if champ_a == champ_b:
-            lines += ["", f"🏆 Модальный чемпион не изменился: <b>{esc(ru_team(champ_a) if champ_a else '?')}</b>"]
+            lines += ["", f"🏆 Модальный чемпион не ��зменился: <b>{esc(ru_team(champ_a) if champ_a else '?')}</b>"]
         else:
             lines += ["", f"🏆 Чемпион (модель): <b>{esc(ru_team(champ_a) if champ_a else '?')}</b> → <b>{esc(ru_team(champ_b) if champ_b else '?')}</b>"]
 
@@ -2582,9 +2758,8 @@ async def cmd_compare_top(u, c):
 
     if len(lines) < 7: lines.append("<i>Заметных изменений нет (все дельты < 1 пп)</i>")
 
-    msg = chr(10).join(lines)
-    if len(msg) > 4000: msg = msg[:3950] + "\n\n<i>...сообщение обрезано...</i>"
-    await u.message.reply_text(msg, parse_mode=ParseMode.HTML)
+    for p in split_text(chr(10).join(lines)):
+        await u.message.reply_text(p, parse_mode=ParseMode.HTML)
 
 
 async def _post_init(app):
@@ -2704,6 +2879,7 @@ def main():
     load_all()
     ensure_predictions_table()
     ensure_score_columns()
+    ensure_artifacts_columns()
 
     try: asyncio.get_event_loop()
     except RuntimeError: asyncio.set_event_loop(asyncio.new_event_loop())
@@ -2712,6 +2888,7 @@ def main():
 
     handlers=[
         ("start",cmd_start),("help",cmd_help),("about",cmd_about),("reload",cmd_reload),
+        ("set_live",cmd_set_live),("compare",cmd_compare_top),
         ("baseline",cmd_baseline),("forecast",cmd_forecast),("modal",cmd_modal),
         ("today",cmd_today),("tomorrow",cmd_tomorrow),("next",cmd_next),
         ("match",cmd_match),
