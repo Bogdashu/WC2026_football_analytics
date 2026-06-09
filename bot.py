@@ -168,13 +168,11 @@ def _bracket_blocks_from(data):
         lines = []
         for m in rd.get("matches", []):
             h = rt(m.get("home")); a = rt(m.get("away")); w = rt(m.get("winner"))
-            extra = []
-            if m.get("score"):
-                extra.append(f"<code>{esc(m['score'])}</code>")
             if m.get("adv") is not None:
-                extra.append(f"{float(m['adv'])*100:.0f}%")
-            tail = (" · " + " · ".join(extra)) if extra else ""
-            lines.append(f"  {h} ➡️ {a} → 🏆 <b>{w}</b>{tail}")
+                tail = f" · {float(m['adv'])*100:.0f}%"
+            else:
+                tail = ""
+            lines.append(f"  {h} vs {a} → 🏆 <b>{w}</b>{tail}")
         out.append(f"{emoji} <b>{label}:</b>\n" + "\n".join(lines))
     cp = bracket.get("champion_prob")
     cp_txt = f" · {float(cp)*100:.1f}%" if cp else ""
@@ -2658,14 +2656,13 @@ def _fmt_bracket_lines(data):
             out.append(f"<b>{names.get(code, code)}:</b>")
             for m in rnd.get("matches", []):
                 h = ru_team(m.get("home", "?")); a = ru_team(m.get("away", "?"))
-                w = m.get("winner"); adv = m.get("adv"); sc = m.get("score")
+                w = m.get("winner"); adv = m.get("adv")
                 tail = ""
                 if w:
-                    tail += f" ➡️ <b>{esc(ru_team(w))}</b>"
+                    tail += f" → 🏆 <b>{esc(ru_team(w))}</b>"
                 if isinstance(adv, (int, float)):
-                    tail += f" ({adv*100:.0f}%)"
-                sct = f" <code>{esc(sc)}</code>" if sc else ""
-                out.append(f"• {esc(h)} — {esc(a)}{sct}{tail}")
+                    tail += f" · {adv*100:.0f}%"
+                out.append(f"• {esc(h)} vs {esc(a)}{tail}")
         return out
     ko = data.get("modal_knockout")
     if not ko:
