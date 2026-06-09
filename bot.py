@@ -1727,7 +1727,7 @@ async def _post_elo_summary_to_channel(bot,ch,title_suffix=""):
         await bot.send_message(chat_id=ch,text=p,parse_mode=ParseMode.HTML)
     return True
 
-async def cmd_elo_summary(u,c):
+async def _legacy_elo_post(u,c):
     if not is_admin(u.effective_user.id): return
     ch=os.environ.get("CHANNEL_ID","")
     if not ch:
@@ -1735,6 +1735,141 @@ async def cmd_elo_summary(u,c):
     suffix=" ".join(c.args).strip() if getattr(c,"args",None) else ""
     ok=await _post_elo_summary_to_channel(c.bot,ch,title_suffix=suffix)
     await u.message.reply_text("\u2705 Отправлено" if ok else "\u26a0\ufe0f Нет данных (нужно ≥1 сыгранный матч)")
+
+def _elo_sg(x):
+    return ("+%.0f" % x) if x >= 0 else ("%.0f" % x)
+
+def _elo_rank(team, elo_map):
+    order = sorted(elo_map.items(), key=lambda kv: kv[1], reverse=True)
+    for i, (t, _) in enumerate(order, 1):
+        if t == team:
+            return i
+    return None
+
+def _team_elo_history(team):
+    """Хронология Elo команды по сыгранным матчам."""
+    out = []
+    for d, home, away, hs, as_, host in get_all_finished():
+        if team not in (home, away):
+            continue
+        ch = get_match_elo_change(d, home, away)
+        if not ch:
+            continue
+        eh_b, eh_a, ea_b, ea_a = ch
+        if team == home:
+            before, after, opp, gf, ga = eh_b, eh_a, away, hs, as_
+        else:
+            before, after, opp, gf, ga = ea_b, ea_a, home, as_, hs
+        if before is None or after is None:
+            continue
+        out.append((d, opp, gf, ga, before, after, after - before))
+    return out
+
+def _fmt_elo_overall(base, cur):
+    played = count_finished()
+    rows = []
+    for t, e_now in cur.items():
+        e_pre = base.get(t, e_now)
+        rows.append((t, e_pre, e_now, e_now - e_pre))
+    by_now = sorted(rows, key=lambda r: r[2], reverse=True)
+    L = []
+    L.append("📊 <b>ELO — СИЛА КОМАНД</b>")
+    L.append("<i>сейчас vs до старта ЧМ</i>")
+    L.append(SEP)
+    if played > 0:
+        L.append("🏟 Сыграно матчей: <b>%d</b>/72" % played)
+    else:
+        L.append("🕜 Турнир ещё не начался — Elo равны стартовым.")
+    L.append("")
+    L.append("🏅 <b>Текущий топ-10 по силе:</b>")
+    for i, (t, pp, nn, dd) in enumerate(by_now[:10], 1):
+        tail = ("  <b>%s</b>" % _elo_sg(dd)) if abs(dd) >= 0.5 else ""
+        L.append("%2d. <b>%s</b> — <code>%.0f</code>%s" % (i, rt(t), nn, tail))
+    changed = [r for r in rows if abs(r[3]) >= 0.5]
+    if changed:
+        ups = sorted([r for r in changed if r[3] > 0], key=lambda r: r[3], reverse=True)[:5]
+        dns = sorted([r for r in changed if r[3] < 0], key=lambda r: r[3])[:5]
+        if ups:
+            L.append("")
+            L.append("🚀 <b>Больше всех прибавили:</b>")
+            for t, pp, nn, dd in ups:
+                L.append("   <b>%s</b>  <code>%.0f</code>→<code>%.0f</code>  <b>%s</b>" % (rt(t), pp, nn, _elo_sg(dd)))
+        if dns:
+            L.append("")
+            L.append("📉 <b>Больше всех просели:</b>")
+            for t, pp, nn, dd in dns:
+                L.append("   <b>%s</b>  <code>%.0f</code>→<code>%.0f</code>  <b>%s</b>" % (rt(t), pp, nn, _elo_sg(dd)))
+        pre_rank = {t: i for i, (t, _v) in enumerate(sorted(((t, pp) for t, pp, nn, dd in rows), key=lambda kv: kv[1], reverse=True), 1)}
+        now_rank = {t: i for i, (t, _v) in enumerate(sorted(((t, nn) for t, pp, nn, dd in rows), key=lambda kv: kv[1], reverse=True), 1)}
+        movers = []
+        for t in cur:
+            if t in pre_rank and t in now_rank:
+                mv = pre_rank[t] - now_rank[t]
+                if mv != 0:
+                    movers.append((t, mv, pre_rank[t], now_rank[t]))
+        movers.sort(key=lambda x: abs(x[1]), reverse=True)
+        if movers:
+            L.append("")
+            L.append("↕️ <b>Рывки в рейтинге (мест):</b>")
+            for t, mv, pr, nr in movers[:5]:
+                arrow = "⬆️" if mv > 0 else "⬇️"
+                L.append("   %s <b>%s</b>  #%d→#%d  (%s)" % (arrow, rt(t), pr, nr, _elo_sg(mv)))
+    else:
+        L.append("")
+        L.append("ℹ️ Пока никто не изменился. После первых матчей здесь появятся те, кто растёт и падает, и рывки в рейтинге.")
+    L.append("")
+    L.append("💡 <code>/elo_summary Аргентина</code> — подробно по сборной")
+    return chr(10).join(L)
+
+def _fmt_elo_team(team, base, cur):
+    e_now = cur.get(team)
+    if e_now is None:
+        return None
+    e_pre = base.get(team, e_now)
+    d = e_now - e_pre
+    rank_now = _elo_rank(team, cur)
+    L = []
+    L.append("📊 <b>ELO — %s</b>" % rt(team))
+    L.append(SEP)
+    L.append(("Сейчас: <b>%.0f</b>" % e_now) + (("  (#%d по силе в модели)" % rank_now) if rank_now else ""))
+    L.append("До ЧМ:  <code>%.0f</code>" % e_pre)
+    if abs(d) >= 0.5:
+        L.append("Изменение: <b>%s</b>" % _elo_sg(d))
+    else:
+        L.append("Изменение: пока нет (матчей ещё не было)")
+    hist = _team_elo_history(team)
+    if hist:
+        L.append("")
+        L.append("📈 <b>По матчам:</b>")
+        for d_, opp, gf, ga, before, after, delta in hist:
+            L.append("   vs %s %s:%s  <code>%.0f</code>→<code>%.0f</code>  <b>%s</b>" % (rt(opp), gf, ga, before, after, _elo_sg(delta)))
+        L.append("")
+        L.append("Суммарно за турнир: <b>%s</b>" % _elo_sg(e_now - e_pre))
+    else:
+        L.append("")
+        L.append("ℹ️ Матчей с участием сборной ещё не сыграно — динамика появится по ходу ЧМ.")
+    return chr(10).join(L)
+
+async def cmd_elo_summary(u, c):
+    base = get_elo_baseline()
+    cur = get_current_elo_db()
+    if not cur:
+        cur = globals().get("ELO") or {}
+    if not cur:
+        await u.message.reply_text("⚠️ Elo пока недоступны — попробуйте позже.")
+        return
+    args = [a for a in (getattr(c, "args", None) or []) if a.strip()]
+    if args:
+        team = _resolve_team_name(" ".join(args))
+        if team and (team in cur or team in base):
+            txt = _fmt_elo_team(team, base, cur)
+            if txt:
+                for pchunk in split_text(txt):
+                    await u.message.reply_text(pchunk, parse_mode=ParseMode.HTML)
+                return
+    txt = _fmt_elo_overall(base, cur)
+    for pchunk in split_text(txt):
+        await u.message.reply_text(pchunk, parse_mode=ParseMode.HTML)
 
 async def job_check_notifications(ctx):
     load_all()
@@ -2930,6 +3065,7 @@ async def _post_init(app):
         BotCommand("standings","📋 Прогноз всех групп"),
         BotCommand("value","💰 Value-ставки"),
         BotCommand("stats","🎯 Точность прогнозов"),
+        BotCommand("elo_summary","📊 Elo: сейчас vs до ЧМ"),
         BotCommand("history","📂 История обновлений"),
         BotCommand("snapshots","🗂 Все снимки прогноза"),
         BotCommand("diff","🔄 Сравнить снимки"),
@@ -3013,6 +3149,7 @@ HELP = "\n".join([
     "📈 <b>Статистика</b>",
     "/stats — точность прогнозов нейросети",
     "/history — архив версий прогноза",
+    "/elo_summary [команда] — сила команд по Elo: сейчас vs до старта ЧМ; с командой — подробно по сборной. Пример: <code>/elo_summary Аргентина</code>",
     "",
     "🔍 <b>Сравнение и архив версий</b>",
     "📌 <i>Версия — это сохранённый «снимок» прогноза. « live » — текущий прогноз.</i>",
@@ -3034,11 +3171,8 @@ HELP_ADMIN = "\n".join([
     "",
     "📥 <b>Данные и прогноз</b>",
     "/update — подгрузить свежие результаты матчей и пересверить прогноз (базовый прогноз замораживается). Пример: <code>/update</code>",
-    "/set_live &lt;версия&gt; — сделать сохранённый снимок текущим (live). Пример: <code>/set_live prematch_FROZEN</code>",
-    "/reload — перечитать прогноз из БД без подгрузки результатов. Пример: <code>/reload</code>",
-    "",
-    "📊 <b>Elo-рейтинги</b>",
-    "/elo_summary — насколько Elo команд изменились с базовых значений. Пример: <code>/elo_summary</code>",
+    "/set_live &lt;версия&gt; — назначить выбранный снимок текущим прогнозом (live) для всех. Пример: <code>/set_live prematch_FROZEN</code>",
+    "/reload — заново подтянуть прогноз и Elo из базы (без обращения к внешним источникам). Нужен после ручной заливки данных. Пример: <code>/reload</code>",
     "",
     "📣 <b>Публикация в канал</b>",
     "/post_preview — предпросмотр поста прогноза (без отправки). Пример: <code>/post_preview</code>",
