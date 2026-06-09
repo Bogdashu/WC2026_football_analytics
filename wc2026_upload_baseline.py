@@ -53,17 +53,22 @@ payload = json.dumps(data)
 
 with psycopg2.connect(DB_URL) as conn:
     with conn.cursor() as cur:
+        # 0) make sure the updated_at column exists (so /history & /set_live can order snapshots)
+        cur.execute(
+            "ALTER TABLE wc2026_artifacts "
+            "ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()"
+        )
         # 1) live key (always overwrite)
         cur.execute(
-            "INSERT INTO wc2026_artifacts (key, content) VALUES ('baseline', %s) "
-            "ON CONFLICT (key) DO UPDATE SET content = EXCLUDED.content",
+            "INSERT INTO wc2026_artifacts (key, content, updated_at) VALUES ('baseline', %s, NOW()) "
+            "ON CONFLICT (key) DO UPDATE SET content = EXCLUDED.content, updated_at = NOW()",
             (payload,),
         )
         # 2) versioned key (overwrite if same label re-uploaded, otherwise insert new)
         if not args.live_only:
             cur.execute(
-                "INSERT INTO wc2026_artifacts (key, content) VALUES (%s, %s) "
-                "ON CONFLICT (key) DO UPDATE SET content = EXCLUDED.content",
+                "INSERT INTO wc2026_artifacts (key, content, updated_at) VALUES (%s, %s, NOW()) "
+                "ON CONFLICT (key) DO UPDATE SET content = EXCLUDED.content, updated_at = NOW()",
                 (versioned_key, payload),
             )
     conn.commit()
