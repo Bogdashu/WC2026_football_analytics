@@ -1055,12 +1055,11 @@ async def cmd_forecast(u,c):
         "<i>По порядку: 1) групповой этап \u2192 2) кто выходит \u2192 3) сетка плей-офф.</i>"
     )
     st1=["1\ufe0f\u20e3 <b>ГРУППОВОЙ ЭТАП</b>",
-         "<i>Ранжир по xОч (ожидаемые очки) · Вых% — выйти из группы · 1м% — выиграть группу · \U0001f3c6 \u2014 шанс стать чемпионом</i>",""]
+         "<i>Ранжир по прогнозу мест (как в плей-офф сетке) · Вых% — выйти из группы · 1м% — выиграть группу · \U0001f3c6 \u2014 шанс стать чемпионом</i>",""]
     for letter in "ABCDEFGHIJKL":
         teams=get_group_teams(letter)
         if not teams: continue
-        xp=group_xpoints(letter)
-        teams.sort(key=lambda t:(xp.get(t,0),probs.get(t,{}).get("P_R32",0)),reverse=True)
+        teams=group_ranked(letter)
         st1.append(f"<b>Группа {letter}</b>")
         for i,t in enumerate(teams,1):
             tp=probs.get(t,{})
@@ -1069,7 +1068,7 @@ async def cmd_forecast(u,c):
             st1.append(
                 f"{mark} <b>{rt(t)}</b> \u2014 Вых {tp.get('P_R32',0)*100:.0f}% · "
                 f"1м {win*100:.0f}% · "
-                f"xОч {xp.get(t,0):.1f} · \U0001f3c6 {tp.get('P_W',0)*100:.1f}%"
+                f"xОч {BASELINE.get('mean_points',{}).get(t,0):.1f} · \U0001f3c6 {tp.get('P_W',0)*100:.1f}%"
             )
         st1.append("")
     parts.append("\n".join(st1).rstrip())
@@ -1270,7 +1269,7 @@ async def cmd_group(u,c):
     if not teams:
         await u.message.reply_text("\u274c Группа не найдена."); return
     probs=BASELINE.get("tournament_probs",{})
-    teams.sort(key=lambda t:(BASELINE.get("mean_points",{}).get(t,0.0),probs.get(t,{}).get("P_R32",0)),reverse=True)
+    teams=group_ranked(letter)
     lines=[f"\U0001f3d9 <b>ГРУППА\u00a0{letter}</b>",
            "<i>«Выход» — шанс выйти из группы (топ-2 + лучшие 3-и места); \U0001f3c6 — шанс стать чемпионом.</i>",
            f"{SEP}",""]
@@ -1911,18 +1910,49 @@ def ensure_artifacts_columns():
     except Exception as e:
         log.warning("ensure_artifacts_columns: %s",e)
 
+def _group_third(letter):
+    """The group's projected 3rd-place team: whoever finishes 3rd most often in
+    the simulation (exactly what the modal playoff bracket uses). Excludes the
+    projected top-2 so it never collides with the direct qualifiers."""
+    teams=get_group_teams(letter)
+    if len(teams)<3: return None
+    gp=BASELINE.get("group_positions",{}) or {}
+    g2=(BASELINE.get("modal_forecast",{}) or {}).get("group_top2",{}) or {}
+    top2=set((g2.get(letter) or [])[:2])
+    rest=[t for t in teams if t not in top2] or list(teams)
+    rest.sort(key=lambda t:(gp.get(t,{}) or {}).get("3",0.0),reverse=True)
+    return rest[0]
+
+def group_ranked(letter):
+    """Single source of truth for group ordering, shared by /forecast, /table and
+    /group so they can never disagree. The order is exactly what the neural net
+    projected: 1st and 2nd are the modal group_top2 (identical to the playoff
+    bracket), then the rest by P(3rd) and overall advance probability."""
+    teams=get_group_teams(letter)
+    if not teams: return teams
+    gp=BASELINE.get("group_positions",{}) or {}
+    probs=BASELINE.get("tournament_probs",{}) or {}
+    g2=(BASELINE.get("modal_forecast",{}) or {}).get("group_top2",{}) or {}
+    pair=[t for t in (g2.get(letter) or []) if t in teams][:2]
+    rest=[t for t in teams if t not in pair]
+    rest.sort(key=lambda t:((gp.get(t,{}) or {}).get("3",0.0),probs.get(t,{}).get("P_R32",0)),reverse=True)
+    return pair+rest
+
 def third_place_qualifiers():
-    """Model estimate of the 8 best third-placed teams that reach the knockouts."""
-    probs=BASELINE.get("tournament_probs",{})
-    thirds=[]
+    """The 8 best third-placed teams that reach the knockouts, derived exactly like
+    the simulator's modal bracket: take each group's projected 3rd (_group_third),
+    keep the best 8 by mean points, then display them by advance %."""
+    probs=BASELINE.get("tournament_probs",{}) or {}
+    mp=BASELINE.get("mean_points",{}) or {}
+    cands=[]
     for letter in "ABCDEFGHIJKL":
-        teams=get_group_teams(letter)
-        if len(teams)<3: continue
-        teams.sort(key=lambda t:(BASELINE.get("mean_points",{}).get(t,0.0),probs.get(t,{}).get("P_R32",0)),reverse=True)
-        third=teams[2]
-        thirds.append((third,letter,probs.get(third,{}).get("P_R32",0)))
-    thirds.sort(key=lambda x:x[2],reverse=True)
-    return thirds[:8]
+        third=_group_third(letter)
+        if not third: continue
+        cands.append((mp.get(third,0.0),letter,third))
+    cands.sort(key=lambda x:-x[0])
+    out=[(t,letter,probs.get(t,{}).get("P_R32",0)) for _,letter,t in cands[:8]]
+    out.sort(key=lambda x:-x[2])
+    return out
 
 def get_all_finished():
     try:
@@ -2143,16 +2173,8 @@ async def cmd_table(u,c):
                 gd=s["GF"]-s["GA"]; nm=esc(ru_team(t))[:13]; mk=" ✅" if i<=2 else ""
                 lines.append(f"<code>{i}. {nm:<13}{s['P']:>2}{s['PTS']:>3}{gd:>+4}</code>{mk}")
         else:
-            mp_=BASELINE.get("mean_points",{}) or {}
             probs_=BASELINE.get("tournament_probs",{}) or {}
-            modal_pair=(BASELINE.get("modal_forecast",{}) or {}).get("group_top2",{}).get(letter)
-            all_t=get_group_teams(letter)
-            if modal_pair and len(modal_pair)>=2 and modal_pair[0] in all_t and modal_pair[1] in all_t:
-                rest=[t for t in all_t if t not in modal_pair[:2]]
-                rest.sort(key=lambda t:(mp_.get(t,0.0),probs_.get(t,{}).get("P_R32",0)),reverse=True)
-                ranked=[modal_pair[0],modal_pair[1]]+rest
-            else:
-                ranked=sorted(all_t,key=lambda t:(mp_.get(t,0.0),probs_.get(t,{}).get("P_R32",0)),reverse=True)
+            ranked=group_ranked(letter)
             third_set=set(t for t,_,_ in third_place_qualifiers())
             for i,t in enumerate(ranked,1):
                 p=probs_.get(t,{}).get("P_R32",0)
