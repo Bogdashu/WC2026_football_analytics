@@ -234,18 +234,33 @@ def sample_score(home, away, ratings, gm, neutral, rng, default_elo):
 
 
 # --------------- knockout "last dance" / surprise factors ------------------
-# Veteran superstars chasing a glorious career finale lift their team a notch
-# in DECISIVE (knockout) games only. Values are Elo-equivalent bonuses, scaled
-# by round (bigger as the stage gets bigger) and by the --legend-factor flag.
-# Teams not listed get nothing; teams not in this WC are simply never matched.
+# INTANGIBLE legacy-motivation lift for veteran icons playing their final WC,
+# applied in DECISIVE (knockout) games only. CRITICAL: a team's raw quality
+# (its stars included) is ALREADY baked into its Elo rating — so these bonuses
+# are deliberately SMALL and capture only the extra clutch/legacy pull Elo
+# can't see (a legend chasing one last title in a win-or-go-home match).
+# Calibrated by: (1) legitimacy of the "last dance" narrative, (2) the player's
+# CURRENT form & role, (3) how clutch-proven they are. Scaled by round and by
+# the --legend-factor flag. Teams not listed get nothing.
 LEGEND_ELO = {
-    "Argentina": 45.0,  # Messi — почти наверняка последний ЧМ
-    "Portugal":  45.0,  # Ronaldo — прощальный турнир
-    "Croatia":   40.0,  # Modric — последний танец
-    "Brazil":    35.0,  # Neymar — последний шанс на титул
-    "France":    25.0,  # Mbappe — в ��оп-форме, гонится за величием
-    "Egypt":     20.0,  # Salah — последний большой шанс
-    "Poland":    18.0,  # Lewandowski — закрыть карьеру красиво
+    # Из EA FC 26 OVR (база EAFC26-Men.csv):
+    # Salah (91), Kane (89), De Bruyne (87), Messi (86), Son (85), Ronaldo (85),
+    # Neuer (84), Modric (83), Dzeko (81), Henderson (79).
+    # Формула бонуса: базовый OVR конвертируется в бонус, но ТОЛЬКО если это реальный
+    # "последний танец" (возраст ~35+), иначе класс игрока уже 100% сидит в Elo.
+
+    "Argentina": 15.0,  # Messi (OVR 86) — уравнен с Роналду.
+    "Portugal":  15.0,  # Ronaldo (OVR 85) — уравнен с Месси.
+    "Croatia":   10.0,  # Modric (OVR 83) — стержень, прощальный ЧМ.
+    "Germany":    9.0,  # Neuer (OVR 84) — опыт и спасения в плей-офф.
+    "Brazil":     9.0,  # Neymar (OVR ~84) — последний шанс, если наберет форму.
+    "Egypt":      7.0,  # Salah (OVR 91) — мега-топ, но пока еще не глубокий ветеран.
+    "Bosnia":     6.0,  # Dzeko (OVR 81) — прощание легенды нации.
+    "England":    4.0,  # Kane (OVR 89) / Henderson (OVR 79).
+    "Korea Republic": 4.0, # Son (OVR 85).
+    "Belgium":    4.0,  # De Bruyne (OVR 87).
+    "Austria":    3.0,  # Arnautovic (OVR ~78).
+    "Mexico":     3.0,  # Ochoa (OVR ~76).
 }
 # Decisiveness multiplier: the later the round, the stronger the legacy pull.
 # (Round labels: R16=1/16, QF=1/8, SF=1/4, F=1/2, W=final match.)
