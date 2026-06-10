@@ -1546,8 +1546,11 @@ async def cmd_update(u,c):
     played=BASELINE.get("matches_played",0); total=BASELINE.get("matches_total",72)
     notif=get_pending_notification()
     if notif and ch:
-        for p in split_text(notif):
-            await c.bot.send_message(chat_id=ch,text=p,parse_mode=ParseMode.HTML)
+        try:
+            for p in split_text(notif):
+                await c.bot.send_message(chat_id=ch,text=p,parse_mode=ParseMode.HTML)
+        except Exception as _e:
+            log.warning("update: channel post failed: %s", _e)
         clear_pending_notification()
         await u.message.reply_text("\u2705 Обновлено + уведомление в канале.",parse_mode=ParseMode.HTML)
     elif notif:
@@ -3251,10 +3254,28 @@ def main():
     app.add_handler(MessageHandler(filters.Regex(r"^/view_"), cmd_view))
 
     async def _on_error(update, context):
+        import traceback as _tb
         log.exception("Unhandled handler error", exc_info=context.error)
+        err = context.error
+        msg = getattr(update, "effective_message", None)
+        uid = getattr(getattr(update, "effective_user", None), "id", None)
         try:
-            msg = getattr(update, "effective_message", None)
-            if msg is not None:
+            if msg is None:
+                return
+            if uid is not None and is_admin(uid):
+                detail = "".join(_tb.format_exception_only(type(err), err)).strip() if err else "?"
+                where = ""
+                if err is not None:
+                    for fr in reversed(_tb.format_exception(type(err), err, err.__traceback__)):
+                        if "bot.py" in fr:
+                            where = fr.strip().split("\n")[0]
+                            break
+                txt = ("❌ Внутренняя ошибка — детали для админа:\n"
+                       f"{SEP}\n\n<code>" + esc(detail)[:600] + "</code>")
+                if where:
+                    txt += "\n<code>" + esc(where)[:300] + "</code>"
+                await msg.reply_text(txt, parse_mode=ParseMode.HTML)
+            else:
                 await msg.reply_text("❌ Внутренняя ошибка при обработке запроса — уже залогировано, попробуйте ещё раз.")
         except Exception:
             pass
