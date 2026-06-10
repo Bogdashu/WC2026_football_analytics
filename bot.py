@@ -81,7 +81,7 @@ RU_TEAMS = {
     "Norway":"Норвегия","Sweden":"Швеция","Poland":"Польша","Ukraine":"Украина",
     "Serbia":"Сербия","Wales":"Уэльс","Czech Republic":"Чехия","Czechia":"Чехия",
     "Ivory Coast":"Кот-д'Ивуар","Cote d'Ivoire":"Кот-д'Ивуар","Côte d'Ivoire":"Кот-д'Ивуар",
-    "Algeria":"Алжир","Egypt":"Египет","Nigeria":"Нигерия","Ghana":"Гана",
+    "Algeria":"Алжир","Egypt":"��гипет","Nigeria":"Нигерия","Ghana":"Гана",
     "Cameroon":"Камерун","Tunisia":"Тунис","Panama":"Панама","Costa Rica":"Коста-Рика",
     "Jamaica":"Ямайка","Paraguay":"Парагвай","Peru":"Перу","Chile":"Чили",
     "Venezuela":"Венесуэла","Bolivia":"Боливия","Saudi Arabia":"Саудовская Аравия","Qatar":"Катар",
@@ -1558,7 +1558,7 @@ async def cmd_update(u,c):
         clear_pending_notification()
     else:
         await u.message.reply_text(
-            f"\u2705 Обновлено! Сыграно {played}/{total}.\nЗначимых изменений нет (delta < 2%).",
+            f"\u2705 Обновлено! Сыграно {played}/{total}.\nЗначимых изменений нет (delta &lt; 2%).",
             parse_mode=ParseMode.HTML)
 
 
@@ -2183,7 +2183,7 @@ async def cmd_table(u,c):
                 p=probs_.get(t,{}).get("P_R32",0)
                 if i<=2: mk="✅"
                 elif i==3 and t in third_set: mk="🟡"
-                else: mk="▫️"
+                else: mk="▫��"
                 lines.append(f"{i}. {mk} <b>{rt(t)}</b>  <i>{p*100:.0f}% на выход</i>")
         blocks.append("\n".join(lines))
     blocks.append("")
