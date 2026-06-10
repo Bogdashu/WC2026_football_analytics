@@ -102,9 +102,20 @@ RU_TEAMS = {
     "El Salvador":"Сальвадор","Guatemala":"Гватемала","Trinidad and Tobago":"Тринидад и Тобаго",
     "Suriname":"Суринам","Haiti":"Гаити","Nicaragua":"Никарагуа",
 }
+_RU_TEAMS_NORM = None
+def _ru_norm_key(s):
+    s = str(s or "").strip().lower()
+    for _a in ("\u2019", "\u2018", "\u02bc", "`"):
+        s = s.replace(_a, "'")
+    return s
 def ru_team(name):
     if name is None: return name
-    return RU_TEAMS.get(str(name).strip(), str(name))
+    s = str(name).strip()
+    if s in RU_TEAMS: return RU_TEAMS[s]
+    global _RU_TEAMS_NORM
+    if _RU_TEAMS_NORM is None:
+        _RU_TEAMS_NORM = {_ru_norm_key(k): v for k, v in RU_TEAMS.items()}
+    return _RU_TEAMS_NORM.get(_ru_norm_key(s), s)
 def rt(x): return esc(ru_team(x))
 def _nfkc(s):
     return _ud.normalize("NFKC", s) if isinstance(s, str) else s
@@ -2373,10 +2384,18 @@ def _resolve_team_input(q):
     if q.strip().lower() in low: return low[q.strip().lower()]
     rv={ru_team(k).lower():k for k in pool}
     if q.strip().lower() in rv: return rv[q.strip().lower()]
+    # apostrophe/case-insensitive match (RU + EN), fixes Cote d'Ivoire style names
+    qn=_ru_norm_key(q)
+    rvn={_ru_norm_key(ru_team(k)):k for k in pool}
+    if qn in rvn: return rvn[qn]
+    lown={_ru_norm_key(k):k for k in pool}
+    if qn in lown: return lown[qn]
     cand=difflib.get_close_matches(q,pool,n=1,cutoff=0.6)
     if cand: return cand[0]
     candr=difflib.get_close_matches(q.lower(),list(rv),n=1,cutoff=0.6)
-    return rv[candr[0]] if candr else None
+    if candr: return rv[candr[0]]
+    candn=difflib.get_close_matches(qn,list(rvn),n=1,cutoff=0.55)
+    return rvn[candn[0]] if candn else None
 
 async def cmd_squad(u,c):
     if not SQUADS and not SQUAD_VALUE:
@@ -2953,7 +2972,7 @@ async def cmd_compare_top(u, c):
             "Пример: <code>/compare live 2026-06-09_prematch</code>\n\n"
             "<b>По конкретному матчу:</b>\n"
             "<code>/compare &lt;версия1&gt; &lt;версия2&gt; &lt;команда&gt; &lt;соперник&gt;</code>\n"
-            "Пример: <code>/compare live prematch_FROZEN Аргентина Бразилия</code>\n\n"
+            "Прим��р: <code>/compare live prematch_FROZEN Аргентина Бразилия</code>\n\n"
             "<i>« live » — текущий прогноз. Ярлыки версий: /snapshots. "
             "Нужна быстрая разница только по чемпиону — /diff.</i>",
             parse_mode=ParseMode.HTML)
