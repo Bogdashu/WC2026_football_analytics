@@ -81,7 +81,7 @@ RU_TEAMS = {
     "Norway":"Норвегия","Sweden":"Швеция","Poland":"Польша","Ukraine":"Украина",
     "Serbia":"Сербия","Wales":"Уэльс","Czech Republic":"Чехия","Czechia":"Чехия",
     "Ivory Coast":"Кот-д'Ивуар","Cote d'Ivoire":"Кот-д'Ивуар","Côte d'Ivoire":"Кот-д'Ивуар",
-    "Algeria":"Алжир","Egypt":"��гипет","Nigeria":"Нигерия","Ghana":"Гана",
+    "Algeria":"Алжир","Egypt":"Египет","Nigeria":"Нигерия","Ghana":"Гана",
     "Cameroon":"Камерун","Tunisia":"Тунис","Panama":"Панама","Costa Rica":"Коста-Рика",
     "Jamaica":"Ямайка","Paraguay":"Парагвай","Peru":"Перу","Chile":"Чили",
     "Venezuela":"Венесуэла","Bolivia":"Боливия","Saudi Arabia":"Саудовская Аравия","Qatar":"Катар",
@@ -1164,7 +1164,7 @@ async def cmd_about(u,c):
         "\U0001f9e0 <b>Модель:</b> Elo-рейтинг + калибровка по одзам\n"
         f"\U0001f3b2 <b>Симуляций:</b> {num_sp(sims)} розыгрышей турнира\n"
         f"\U0001f504 <b>Сыграно:</b> {played}/{total} матчей\n"
-        f"\U0001f4c5 <b>Обн��влено:</b> {gen or '—'}\n"
+        f"\U0001f4c5 <b>Обновлено:</b> {gen or '—'}\n"
         f"\U0001f4c8 <b>Форм-бонус:</b> {form}\n"
         "\U0001f4b0 <b>Одзы:</b> The Odds API + football-data.org\n\n"
         f"{DASH}\n"
@@ -1357,7 +1357,7 @@ async def cmd_match(u,c):
             team_a, team_b = ta, tb; break
     if not team_a or not team_b:
         await u.message.reply_text(
-            f"❌ Не смог распознать команды из <i>{esc(' '.join(args))}</i>. Попробу�� полные названия.",
+            f"❌ Не смог распознать команды из <i>{esc(' '.join(args))}</i>. Попробуй полные названия.",
             parse_mode=ParseMode.HTML); return
     fixture=None
     try:
@@ -1648,7 +1648,7 @@ async def cmd_diff(u,c):
         lines.append(f"{arrow} <b>{esc(ru_team(t))}</b>: {wa:.2f}% \u2192 {wb:.2f}% (<b>{sign}{d:.2f}пп</b>)")
         shown+=1
     if shown==0:
-        lines.append("<i>заметных изм��нений нет (все дельты &lt; 0.01пп)</i>")
+        lines.append("<i>заметных изменений нет (все дельты &lt; 0.01пп)</i>")
     champ_a=(a.get("modal_forecast") or {}).get("modal_champion")
     champ_b=(b.get("modal_forecast") or {}).get("modal_champion")
     if champ_a or champ_b:
@@ -1701,7 +1701,7 @@ async def cmd_update(u,c):
             if ("api_get failed" in err) or ("remote end closed" in low) or ("urlerror" in low) or ("timed out" in low) or ("connection" in low) or ("http error" in low):
                 msg=("⚠️ <b>Свежие результаты подгрузить не удалось.</b>\n"
                      f"{SEP}\n\n"
-                     "Внешний источник результатов (football-data.org) сейчас не отвеча��т.\n\n"
+                     "Внешний источник результатов (football-data.org) сейчас не отвечает.\n\n"
                      "ℹ️ Это не ошибка бота. Турнир ещё не начался "
                      "(первый матч — 11 июня), сыгранных матчей нет (0/72), "
                      "поэтому подгружать пока нечего.\n\n"
@@ -1790,7 +1790,7 @@ async def _post_forecast_to_channel(bot,ch):
             f"🏆 <b>Чемпион: {rt(f_w)}</b>\n"
             f"🥈 Финалист: <b>{rt(f_l)}</b>\n\n"
         )
-        + f"\n{DASH}\n��� <b>ПОБЕДИТЕЛИ ГРУПП:</b>\n"
+        + f"\n{DASH}\n🏆 <b>ПОБЕДИТЕЛИ ГРУПП:</b>\n"
         + "".join(
             f"<code>{letter}</code>  🥇 <b>{rt((g2.get(letter,['?'])+['?'])[0])}</b> · "
             f"{rt((g2.get(letter,['?','?'])+['?','?'])[1])}\n"
@@ -2290,7 +2290,7 @@ async def cmd_schedule(u,c):
     rows=get_fixtures(date.today(),limit=200 if show_all else n)
     if not rows:
         await u.message.reply_text("📅 Ближайших матчей не найдено.",parse_mode=ParseMode.HTML); return
-    lines=["📅 <b>РАСПИСАНИЕ МАТЧЕЙ</b>","<i>🌍 Только фак��ы · без прогнозов (прогноз — /today, /next)</i>",SEP]
+    lines=["📅 <b>РАСПИСАНИЕ МАТЧЕЙ</b>","<i>🌍 Только факты · без прогнозов (прогноз — /today, /next)</i>",SEP]
     _MSK=timezone(timedelta(hours=3))
     items=[]
     for d,home,away,host,o1,ox,o2 in rows:
@@ -2473,7 +2473,7 @@ async def cmd_tour(u,c):
     if idx is None:
         if c.args:
             await u.message.reply_text(
-                "\u2754 Тур н�� найден. Номера: 1\u20133 — группа, 4=1/16, 5=1/8, 6=1/4, 7=ПФ, 8=за 3-е, 9=финал.",
+                "\u2754 Тур не найден. Номера: 1\u20133 — группа, 4=1/16, 5=1/8, 6=1/4, 7=ПФ, 8=за 3-е, 9=финал.",
                 parse_mode=ParseMode.HTML); return
         await u.message.reply_text(
             "\u26bd Полностью сыгранных туров ещё нет.\n\u2192 /day — итоги за конкретный день.",
@@ -2534,7 +2534,7 @@ async def cmd_table(u,c):
                 p=probs_.get(t,{}).get("P_R32",0)
                 if i<=2: mk="✅"
                 elif i==3 and t in third_set: mk="🟡"
-                else: mk="▫���"
+                else: mk="⚪"
                 lines.append(f"{i}. {mk} <b>{rt(t)}</b>  <i>{p*100:.0f}% на выход</i>")
         blocks.append("\n".join(lines))
     blocks.append("")
@@ -3098,7 +3098,7 @@ async def cmd_reload(u, c):
 
 async def cmd_set_live(u, c):
     if not is_admin(u.effective_user.id): return
-    if not c.args: return await u.message.reply_text("��спользование: /set_live 2026-06-09_prematch")
+    if not c.args: return await u.message.reply_text("Использование: /set_live 2026-06-09_prematch")
     lbl = c.args[0]
     import json
     with get_conn() as conn:
@@ -3312,7 +3312,7 @@ async def cmd_compare_top(u, c):
             "Пример: <code>/compare live 2026-06-09_prematch</code>\n\n"
             "<b>По конкретному матчу:</b>\n"
             "<code>/compare &lt;версия1&gt; &lt;версия2&gt; &lt;команда&gt; &lt;соперник&gt;</code>\n"
-            "Прим��р: <code>/compare live prematch_FROZEN Аргентина Бразилия</code>\n\n"
+            "Пример: <code>/compare live prematch_FROZEN Аргентина Бразилия</code>\n\n"
             "<i>« live » — текущий прогноз. Ярлыки версий: /snapshots. "
             "Нужна быстрая разница только по чемпиону — /diff.</i>",
             parse_mode=ParseMode.HTML)
@@ -3493,7 +3493,7 @@ WELCOME = "\n".join([
     "🏁 /table — таблицы групп по очкам (фактические)",
     "👥 /squad — реальные составы и их стоимость (Transfermarkt)",
     "",
-    "📈 <b>СТАТИСТИК��</b>",
+    "📈 <b>СТАТИСТИКА</b>",
     "🎯 /stats — точность прогнозов нейросети",
     "📂 /history — архив версий прогноза",
     "🗂 /snapshots — список всех сохранённых версий",
@@ -3533,7 +3533,7 @@ HELP = "\n".join([
     "📈 <b>Статистика</b>",
     "/stats — точность прогнозов нейросети",
     "/history — архив версий прогноза",
-    "/elo_summary [команда] — сила команд по Elo: сейчас vs до старта ЧМ; с ��омандой — подробно по сборной. Пример: <code>/elo_summary Аргентина</code>",
+    "/elo_summary [команда] — сила команд по Elo: сейчас vs до старта ЧМ; с командой — подробно по сборной. Пример: <code>/elo_summary Аргентина</code>",
     "",
     "🔍 <b>Сравнение и архив версий</b>",
     "📌 <i>Версия — это сохранённый «снимок» прогноза. « live » — текущий прогноз.</i>",
