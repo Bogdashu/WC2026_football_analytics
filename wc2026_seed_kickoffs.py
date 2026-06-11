@@ -42,6 +42,20 @@ PLAYOFF_ALIAS = {
     "Winner FIFA Playoff 2": "Iraq",
 }
 
+# Варианты написания команд: в wc2026_elo.csv одни имена, а в таблице
+# wc2026_fixtures (данные из football-data API) у ряда сборных другое
+# написание (Korea Republic / Czechia / Bosnia-Herzegovina и т.д.).
+# Перебираем все варианты, пока строка не найдётся.
+NAME_VARIANTS = {
+    "South Korea": ["South Korea", "Korea Republic", "Republic of Korea"],
+    "Czech Republic": ["Czech Republic", "Czechia"],
+    "Bosnia and Herzegovina": ["Bosnia and Herzegovina", "Bosnia-Herzegovina",
+                               "Bosnia & Herzegovina", "Bosnia"],
+    "United States": ["United States", "USA", "United States of America"],
+    "Cape Verde": ["Cape Verde", "Cabo Verde"],
+    "DR Congo": ["DR Congo", "Congo DR", "Democratic Republic of the Congo"],
+}
+
 # Все 72 матча группового этапа.
 # Формат: (МСК дата-время "YYYY-MM-DD HH:MM", home, away)
 # Время — момент старта в Москве (UTC+3).
@@ -177,23 +191,34 @@ def main():
         with conn.cursor() as cur:
             cur.execute("ALTER TABLE wc2026_fixtures ADD COLUMN IF NOT EXISTS kickoff_utc TIMESTAMPTZ")
             for utc_dt, home, away, msk_str in plan:
-                # Пробуем оригинальное имя; если 0 строк — пробуем placeholder вариант.
-                names_to_try = [(home, away)]
-                if home in reverse_alias:
-                    names_to_try.append((reverse_alias[home], away))
-                if away in reverse_alias:
-                    names_to_try.append((home, reverse_alias[away]))
+                # Кандидаты имён: основное + варианты написания + плей-офф плейсхолдеры.
+                cand_home = list(NAME_VARIANTS.get(home, [home]))
+                cand_away = list(NAME_VARIANTS.get(away, [away]))
+                if home in reverse_alias and reverse_alias[home] not in cand_home:
+                    cand_home.append(reverse_alias[home])
+                if away in reverse_alias and reverse_alias[away] not in cand_away:
+                    cand_away.append(reverse_alias[away])
                 hit = False
-                for h_try, a_try in names_to_try:
-                    cur.execute(
-                        "UPDATE wc2026_fixtures SET kickoff_utc = %s "
-                        "WHERE home = %s AND away = %s",
-                        (utc_dt, h_try, a_try),
-                    )
-                    if cur.rowcount > 0:
-                        updated += cur.rowcount
-                        hit = True
-                        break
+                for h_try in cand_home:
+                    for a_try in cand_away:
+                        cur.execute(
+                            "UPDATE wc2026_fixtures SET kickoff_utc = %s "
+                            "WHERE home = %s AND away = %s",
+                            (utc_dt, h_try, a_try))
+                        if cur.rowcount > 0:
+                            updated += cur.rowcount; hit = True; break
+                    if hit: break
+                # Последний резерв — без учёта регистра.
+                if not hit:
+                    for h_try in cand_home:
+                        for a_try in cand_away:
+                            cur.execute(
+                                "UPDATE wc2026_fixtures SET kickoff_utc = %s "
+                                "WHERE lower(home) = lower(%s) AND lower(away) = lower(%s)",
+                                (utc_dt, h_try, a_try))
+                            if cur.rowcount > 0:
+                                updated += cur.rowcount; hit = True; break
+                        if hit: break
                 if not hit:
                     not_found.append((msk_str, home, away))
         conn.commit()
