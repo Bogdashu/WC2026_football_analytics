@@ -513,6 +513,163 @@ def get_finished_fixtures(match_date):
                 return cur.fetchall()
     except: return []
 
+
+# ============================================================
+# Matchday-aware scheduling helpers
+# Preview is always posted BEFORE the day's matches; results only AFTER all
+# of a matchday's games are finished. Everything is keyed to the MSK match-day
+# (the date the user sees), independent of the server's UTC clock.
+# ============================================================
+MSK_TZ = timezone(timedelta(hours=3))
+
+def _matchday_kickoffs():
+    """{match_date: earliest_kickoff_utc} grouped by the STORED match_date — the
+    same day-grouping get_fixtures and the channel post use. This keeps a late
+    game (e.g. 05:00 МСК) together with its matchday instead of splitting it onto
+    the next calendar date."""
+    if _KICKOFFS is None: _load_kickoffs()
+    days={}
+    for (d,h,a),kt in (_KICKOFFS or {}).items():
+        if not kt: continue
+        if d not in days or kt<days[d]: days[d]=kt
+    return days
+
+def next_matchday(now=None):
+    """(msk_date, first_kickoff_utc) of the next matchday not yet started, or None."""
+    now=now or datetime.now(timezone.utc)
+    fut=[(md,kt) for md,kt in _matchday_kickoffs().items() if kt>now]
+    if not fut: return None
+    fut.sort(key=lambda x:x[1]); return fut[0]
+
+def _matchday_total(md):
+    """How many matches are scheduled on MSK date md."""
+    return len(get_fixtures(md, md, limit=50))
+
+def _upcoming_fixture_days(limit_days=10):
+    """Distinct MSK match_dates from today forward (fallback when kickoff unseeded)."""
+    today=datetime.now(MSK_TZ).date()
+    rows=get_fixtures(today, today+timedelta(days=limit_days), limit=150)
+    return sorted({r[0] for r in rows})
+
+def _preview_due_matchday():
+    """MSK date whose preview should go out now: within PREVIEW_LEAD_HOURS of the
+    first kickoff and not yet posted. Falls back to 'next day with fixtures' when
+    kickoff_utc isn't seeded. Returns a date or None."""
+    lead_h=int(os.environ.get("PREVIEW_LEAD_HOURS","18"))
+    now=datetime.now(timezone.utc)
+    nm=next_matchday(now)
+    if nm:
+        md,first_kt=nm
+        if (first_kt-now).total_seconds()>lead_h*3600: return None
+        if get_meta(f"preview_posted_{md.isoformat()}")=="1": return None
+        return md
+    today=datetime.now(MSK_TZ).date()
+    for md in _upcoming_fixture_days():
+        if md<=today: continue
+        if get_meta(f"preview_posted_{md.isoformat()}")=="1": continue
+        return md
+    return None
+
+def _finished_match_dates():
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT DISTINCT match_date FROM wc2026_fixtures "
+                            "WHERE home_score IS NOT NULL ORDER BY match_date")
+                return [r[0] for r in cur.fetchall()]
+    except Exception:
+        return []
+
+def _due_results_matchday():
+    """Oldest MSK matchday that is fully finished (every game has a score) and not
+    yet announced in the channel, or None."""
+    today_msk=datetime.now(MSK_TZ).date()
+    for md in _finished_match_dates():
+        if md>today_msk: continue
+        if get_meta(f"results_posted_{md.isoformat()}")=="1": continue
+        total=_matchday_total(md)
+        if total and len(get_finished_fixtures(md))>=total:
+            return md
+    return None
+
+# ============================================================
+# Round ("тур") definitions — used to post ONE results recap per round
+# (group-stage Тур 1/2/3, then knockout stages) instead of daily spoilers.
+# A match belongs to the latest tour whose start time <= its kickoff_utc.
+# Times are UTC (МСК = UTC+3). Requires kickoff_utc to be seeded.
+# ============================================================
+TOURS = [
+    ("Тур 1",             datetime(2026,6,11,19,0,tzinfo=timezone.utc)),
+    ("Тур 2",             datetime(2026,6,18,16,0,tzinfo=timezone.utc)),
+    ("Тур 3",             datetime(2026,6,24,19,0,tzinfo=timezone.utc)),
+    ("1/16 финала",       datetime(2026,6,28,19,0,tzinfo=timezone.utc)),
+    ("1/8 финала",        datetime(2026,7,4,17,0,tzinfo=timezone.utc)),
+    ("1/4 финала",        datetime(2026,7,9,20,0,tzinfo=timezone.utc)),
+    ("Полуфиналы",        datetime(2026,7,14,19,0,tzinfo=timezone.utc)),
+    ("Матч за 3-е место", datetime(2026,7,18,21,0,tzinfo=timezone.utc)),
+    ("Финал",             datetime(2026,7,19,19,0,tzinfo=timezone.utc)),
+]
+
+def _tour_of(kt):
+    idx=None
+    for i,(_label,start) in enumerate(TOURS):
+        if kt>=start: idx=i
+    return idx
+
+def _tour_matches(idx):
+    if _KICKOFFS is None: _load_kickoffs()
+    return [(d,h,a) for (d,h,a),kt in (_KICKOFFS or {}).items() if kt and _tour_of(kt)==idx]
+
+def _finished_set():
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT match_date,home,away FROM wc2026_fixtures WHERE home_score IS NOT NULL")
+                return {(r[0],r[1],r[2]) for r in cur.fetchall()}
+    except Exception:
+        return set()
+
+def _due_results_tour():
+    """Oldest tour fully finished (all matches scored) and not yet posted, or None."""
+    fin=_finished_set()
+    # Auto-post ONLY group-stage tours (Тур 1/2/3). Playoff recaps are huge
+    # spoilers, so they are NEVER auto-posted — use /tour or /posttour manually.
+    for idx in range(3):
+        if get_meta(f"results_tour_posted_{idx}")=="1": continue
+        matches=_tour_matches(idx)
+        if not matches: continue
+        if sum(1 for m in matches if m in fin)>=len(matches):
+            return idx
+    return None
+
+async def _ingest_now(timeout=120):
+    """Best-effort pull of fresh results into the DB before a results post."""
+    global _UPDATING
+    if _UPDATING: return False
+    if not os.environ.get("FOOTBALL_DATA_API_KEY",""): return False
+    _UPDATING=True
+    try:
+        r=subprocess.run([sys.executable,"-X","utf8","wc2026_ingest_results.py"],
+                         capture_output=True,text=True,timeout=timeout,env=os.environ.copy())
+        if r.returncode!=0:
+            log.warning("ingest_now rc=%s stderr=%s",r.returncode,(r.stderr or "")[:300]); return False
+        return True
+    except Exception as e:
+        log.warning("ingest_now exception: %s",e); return False
+    finally:
+        _UPDATING=False
+
+async def job_preview(ctx):
+    """Post a matchday's predictions to the channel BEFORE its first match."""
+    ch=os.environ.get("CHANNEL_ID","")
+    if not ch: return
+    md=_preview_due_matchday()
+    if md is None: return
+    ok=await _post_today_to_channel(ctx.bot,ch,md)
+    if ok:
+        set_meta(f"preview_posted_{md.isoformat()}","1")
+        log.info("preview posted for %s", md.isoformat())
+
 def get_baseline_versions():
     try:
         with get_conn() as conn:
@@ -905,9 +1062,13 @@ def fmt_channel(d,home,away,host,o1=None,ox=None,o2=None):
     outcome,c_e,c_l,expl=predict_natural(p_h,p_d,p_a,home,away)
     grp=get_team_group(home) or "?"
     host_lbl=f"{rt(home)} дома" if not neutral else "нейтральное поле"
+    kt_lbl=fmt_msk(get_kickoff(d,home,away))
+    date_line=f"\U0001f4c5 {fmt_date_ru(d)}"
+    if kt_lbl: date_line+=f" \u00b7 \U0001f552 {kt_lbl}"
+    date_line+=f" \u00b7 Группа\u00a0{grp} \u00b7 {host_lbl}"
     lines=[
         f"\U0001f3df <b>{rt(home)}</b>  \u2014  <b>{rt(away)}</b>",
-        f"\U0001f4c5 {fmt_date_ru(d)} \u00b7 Группа\u00a0{grp} \u00b7 {host_lbl}","",
+        date_line,"",
         f"\U0001f9e0 <b>Прогноз:</b> {esc(outcome)}",
         f"{c_e} <b>Уверенность:</b> {c_l} \u2014 <i>{esc(expl)}</i>","",
         f"\U0001f3e0 <code>{bar(p_h)}</code> {p_h*100:4.0f}%",
@@ -915,6 +1076,11 @@ def fmt_channel(d,home,away,host,o1=None,ox=None,o2=None):
         f"\u2708\ufe0f <code>{bar(p_a)}</code> {p_a*100:4.0f}%",
     ]
     ms=BASELINE.get("modal_scores",{}).get(f"{home}|{away}") if BASELINE else None
+    if not ms:
+        try:
+            sc=predict_scoreline(home,away,neutral,top=1)
+            if sc: ms=f"{sc[0][0]}:{sc[0][1]}"
+        except Exception: ms=None
     if ms: lines+=["",f"\U0001f3af <b>\u0421\u0430\u043c\u044b\u0439 \u0432\u0435\u0440\u043e\u044f\u0442\u043d\u044b\u0439 \u0441\u0447\u0451\u0442:</b> <code>{esc(ms)}</code>"]
     sn=sensation_note(home,away,p_h,p_d,p_a,o1,ox,o2)
     if sn: lines+=["",f"<i>{esc(sn)}</i>"]
@@ -998,7 +1164,7 @@ async def cmd_about(u,c):
         "\U0001f9e0 <b>Модель:</b> Elo-рейтинг + калибровка по одзам\n"
         f"\U0001f3b2 <b>Симуляций:</b> {num_sp(sims)} розыгрышей турнира\n"
         f"\U0001f504 <b>Сыграно:</b> {played}/{total} матчей\n"
-        f"\U0001f4c5 <b>Обновлено:</b> {gen or '—'}\n"
+        f"\U0001f4c5 <b>Обн��влено:</b> {gen or '—'}\n"
         f"\U0001f4c8 <b>Форм-бонус:</b> {form}\n"
         "\U0001f4b0 <b>Одзы:</b> The Odds API + football-data.org\n\n"
         f"{DASH}\n"
@@ -1191,7 +1357,7 @@ async def cmd_match(u,c):
             team_a, team_b = ta, tb; break
     if not team_a or not team_b:
         await u.message.reply_text(
-            f"❌ Не смог распознать команды из <i>{esc(' '.join(args))}</i>. Попробуй полные названия.",
+            f"❌ Не смог распознать команды из <i>{esc(' '.join(args))}</i>. Попробу�� полные названия.",
             parse_mode=ParseMode.HTML); return
     fixture=None
     try:
@@ -1482,7 +1648,7 @@ async def cmd_diff(u,c):
         lines.append(f"{arrow} <b>{esc(ru_team(t))}</b>: {wa:.2f}% \u2192 {wb:.2f}% (<b>{sign}{d:.2f}пп</b>)")
         shown+=1
     if shown==0:
-        lines.append("<i>заметных изменений нет (все дельты &lt; 0.01пп)</i>")
+        lines.append("<i>заметных изм��нений нет (все дельты &lt; 0.01пп)</i>")
     champ_a=(a.get("modal_forecast") or {}).get("modal_champion")
     champ_b=(b.get("modal_forecast") or {}).get("modal_champion")
     if champ_a or champ_b:
@@ -1535,7 +1701,7 @@ async def cmd_update(u,c):
             if ("api_get failed" in err) or ("remote end closed" in low) or ("urlerror" in low) or ("timed out" in low) or ("connection" in low) or ("http error" in low):
                 msg=("⚠️ <b>Свежие результаты подгрузить не удалось.</b>\n"
                      f"{SEP}\n\n"
-                     "Внешний источник результатов (football-data.org) сейчас не отвечает.\n\n"
+                     "Внешний источник результатов (football-data.org) сейчас не отвеча��т.\n\n"
                      "ℹ️ Это не ошибка бота. Турнир ещё не начался "
                      "(первый матч — 11 июня), сыгранных матчей нет (0/72), "
                      "поэтому подгружать пока нечего.\n\n"
@@ -1577,8 +1743,8 @@ async def cmd_update(u,c):
 # CHANNEL POSTING  (no betting/odds content)
 # ============================================================
 
-async def _post_today_to_channel(bot,ch):
-    today=date.today()
+async def _post_today_to_channel(bot,ch,day=None):
+    today=day or datetime.now(MSK_TZ).date()
     rows=get_fixtures(today,today,limit=20)
     if not rows: return False
     record_predictions(rows)   # сохраняем прогнозы один раз
@@ -1624,7 +1790,7 @@ async def _post_forecast_to_channel(bot,ch):
             f"🏆 <b>Чемпион: {rt(f_w)}</b>\n"
             f"🥈 Финалист: <b>{rt(f_l)}</b>\n\n"
         )
-        + f"\n{DASH}\n📊 <b>ПОБЕДИТЕЛИ ГРУПП:</b>\n"
+        + f"\n{DASH}\n��� <b>ПОБЕДИТЕЛИ ГРУПП:</b>\n"
         + "".join(
             f"<code>{letter}</code>  🥇 <b>{rt((g2.get(letter,['?'])+['?'])[0])}</b> · "
             f"{rt((g2.get(letter,['?','?'])+['?','?'])[1])}\n"
@@ -1662,14 +1828,25 @@ async def job_morning(ctx):
     if ch: await _post_today_to_channel(ctx.bot,ch)
 
 async def job_results(ctx):
+    if os.environ.get("RESULTS_POST","1")=="0": return
     ch=os.environ.get("CHANNEL_ID","")
     if not ch: return
-    yesterday=date.today()-timedelta(days=1)
-    finished=get_finished_fixtures(yesterday)
+    await _ingest_now()
+    load_all()
+    _tidx=_due_results_tour()
+    if _tidx is None: return
+    _label=TOURS[_tidx][0]
+    _tmatches=_tour_matches(_tidx)
+    _tdates=sorted({d for (d,h,a) in _tmatches})
+    for _d in _tdates: resolve_predictions(_d)
+    _want=set(_tmatches)
+    finished=[]
+    for _d in _tdates:
+        for _row in get_finished_fixtures(_d):
+            if (_row[0],_row[1],_row[2]) in _want: finished.append(_row)
     if not finished: return
-    resolve_predictions(yesterday)   # сверяем прогнозы с реальностью
     correct=total=0
-    lines=[f"\U0001f4cb <b>ИТОГИ {fmt_date_ru(yesterday).upper()}</b>",
+    lines=[f"\U0001f4cb <b>ИТОГИ — {esc(_label.upper())}</b>",
            "<i>Прогноз нейросети vs реальность</i>",f"{SEP}",""]
     for d,home,away,hs,as_,host in finished:
         p_h,p_d,p_a=predict_1x2(home,away,str(host)!="1")
@@ -1696,10 +1873,11 @@ async def job_results(ctx):
         _s=get_accuracy_stats(); c_all,r_all=_s["correct"],_s["resolved"]
         season=f" \u00b7 за турнир: {c_all}/{r_all}" if r_all else ""
         lines+=[f"{SEP}",
-                f"\U0001f3af <b>Точность дня: {correct}/{total} ({correct/total*100:.0f}%)</b>{season}",
+                f"\U0001f3af <b>Точность тура: {correct}/{total} ({correct/total*100:.0f}%)</b>{season}",
                 "\U0001f916 @wc2026_football_bot"]
     for p in split_text("\n".join(lines)):
         await ctx.bot.send_message(chat_id=ch,text=p,parse_mode=ParseMode.HTML)
+    set_meta(f"results_tour_posted_{_tidx}","1")
 
 async def _post_elo_summary_to_channel(bot,ch,title_suffix=""):
     """Сводный пост: как турнир переписал Elo всех команд (pre → now).
@@ -2112,7 +2290,7 @@ async def cmd_schedule(u,c):
     rows=get_fixtures(date.today(),limit=200 if show_all else n)
     if not rows:
         await u.message.reply_text("📅 Ближайших матчей не найдено.",parse_mode=ParseMode.HTML); return
-    lines=["📅 <b>РАСПИСАНИЕ МАТЧЕЙ</b>","<i>🌍 Только факты · без прогнозов (прогноз — /today, /next)</i>",SEP]
+    lines=["📅 <b>РАСПИСАНИЕ МАТЧЕЙ</b>","<i>🌍 Только фак��ы · без прогнозов (прогноз — /today, /next)</i>",SEP]
     _MSK=timezone(timedelta(hours=3))
     items=[]
     for d,home,away,host,o1,ox,o2 in rows:
@@ -2168,6 +2346,168 @@ async def cmd_results(u,c):
     for p in split_text("\n".join(lines)):
         await u.message.reply_text(p,parse_mode=ParseMode.HTML)
 
+def _day_results_lines(md):
+    """ИТОГИ дня (md = MSK date): прогноз vs реальность. None если матчей нет."""
+    finished=get_finished_fixtures(md)
+    if not finished: return None
+    resolve_predictions(md)
+    correct=total=0
+    lines=[f"\U0001f4cb <b>ИТОГИ {fmt_date_ru(md).upper()}</b>",
+           "<i>Прогноз нейросети vs реальность</i>",f"{SEP}",""]
+    for d,home,away,hs,as_,host in finished:
+        p_h,p_d,p_a=predict_1x2(home,away,str(host)!="1")
+        pred=outcome_code(p_h,p_d,p_a)
+        actual="H" if hs>as_ else ("A" if as_>hs else "D")
+        pred_txt={"H":f"Победа {ru_team(home)}","D":"Ничья","A":f"Победа {ru_team(away)}"}[pred]
+        ok=pred==actual; correct+=int(ok); total+=1
+        mk="\u2705 сбылся" if ok else "\u274c мимо"
+        block=[
+            f"\U0001f3df <b>{rt(home)}</b> {hs}:{as_} <b>{rt(away)}</b>",
+            f"\U0001f916 Прогноз: {esc(pred_txt)} \u2014 {mk}",
+        ]
+        chg=get_match_elo_change(d,home,away)
+        if chg and chg[0] is not None:
+            eh_b,eh_a,ea_b,ea_a=chg
+            dh=eh_a-eh_b; da=ea_a-ea_b
+            def _sg(x): return (f"+{x:.0f}" if x>=0 else f"{x:.0f}")
+            block.append(
+                f"\U0001f4ca Elo: {rt(home)} <code>{eh_b:.0f}\u2192{eh_a:.0f}</code> (<b>{_sg(dh)}</b>) \u00b7 "
+                f"{rt(away)} <code>{ea_b:.0f}\u2192{ea_a:.0f}</code> (<b>{_sg(da)}</b>)"
+            )
+        block.append("")
+        lines+=block
+    if total:
+        lines+=[f"{SEP}",
+                f"\U0001f3af <b>Точность дня: {correct}/{total} ({correct/total*100:.0f}%)</b>"]
+    return lines
+
+async def cmd_day(u,c):
+    """Сверка результатов за день по запросу (без спойлеров в канал)."""
+    md=None
+    if c.args:
+        a=str(c.args[0]).strip().lower()
+        if a in ("сегодня","today"): md=datetime.now(MSK_TZ).date()
+        elif a in ("вчера","yesterday"): md=datetime.now(MSK_TZ).date()-timedelta(days=1)
+        else:
+            try: md=date.fromisoformat(a)
+            except Exception: md=None
+    if md is None:
+        fd=_finished_match_dates()
+        if not fd:
+            await u.message.reply_text(
+                "\U0001f4cb Сыгранных матчей пока нет.\n\u2192 Расписание: /schedule",
+                parse_mode=ParseMode.HTML); return
+        md=fd[-1]
+    lines=_day_results_lines(md)
+    if lines is None:
+        await u.message.reply_text(
+            f"\u26bd За {fmt_date_ru(md)} нет сыгранных матчей.\n"
+            "\u2192 /day ГГГГ-ММ-ДД (напр. /day 2026-06-12), /day вчера, или /results",
+            parse_mode=ParseMode.HTML); return
+    lines.append("\U0001f916 @wc2026_football_bot")
+    for p in split_text("\n".join(lines)):
+        await u.message.reply_text(p,parse_mode=ParseMode.HTML)
+
+def _tour_results_lines(idx):
+    """ИТОГИ тура: прогноз vs реальность по сыгранным матчам тура. None если нет."""
+    matches=_tour_matches(idx)
+    if not matches: return None
+    dates=sorted({d for (d,h,a) in matches})
+    for d in dates: resolve_predictions(d)
+    want=set(matches)
+    finished=[]
+    for d in dates:
+        for row in get_finished_fixtures(d):
+            if (row[0],row[1],row[2]) in want: finished.append(row)
+    if not finished: return None
+    correct=total=0
+    lines=[f"\U0001f4cb <b>ИТОГИ — {esc(TOURS[idx][0].upper())}</b>",
+           "<i>Прогноз нейросети vs реальность</i>",f"{SEP}",""]
+    for d,home,away,hs,as_,host in finished:
+        p_h,p_d,p_a=predict_1x2(home,away,str(host)!="1")
+        pred=outcome_code(p_h,p_d,p_a)
+        actual="H" if hs>as_ else ("A" if as_>hs else "D")
+        pred_txt={"H":f"Победа {ru_team(home)}","D":"Ничья","A":f"Победа {ru_team(away)}"}[pred]
+        ok=pred==actual; correct+=int(ok); total+=1
+        mk="\u2705 сбылся" if ok else "\u274c мимо"
+        block=[
+            f"\U0001f3df <b>{rt(home)}</b> {hs}:{as_} <b>{rt(away)}</b>",
+            f"\U0001f916 Прогноз: {esc(pred_txt)} \u2014 {mk}",
+        ]
+        chg=get_match_elo_change(d,home,away)
+        if chg and chg[0] is not None:
+            eh_b,eh_a,ea_b,ea_a=chg
+            dh=eh_a-eh_b; da=ea_a-ea_b
+            def _sg(x): return (f"+{x:.0f}" if x>=0 else f"{x:.0f}")
+            block.append(
+                f"\U0001f4ca Elo: {rt(home)} <code>{eh_b:.0f}\u2192{eh_a:.0f}</code> (<b>{_sg(dh)}</b>) \u00b7 "
+                f"{rt(away)} <code>{ea_b:.0f}\u2192{ea_a:.0f}</code> (<b>{_sg(da)}</b>)"
+            )
+        block.append("")
+        lines+=block
+    if total:
+        lines+=[f"{SEP}",
+                f"\U0001f3af <b>Точность тура: {correct}/{total} ({correct/total*100:.0f}%)</b>"]
+    return lines
+
+def _resolve_tour_idx(args):
+    if args:
+        a=str(args[0]).strip()
+        if a.isdigit():
+            n=int(a)
+            if 1<=n<=len(TOURS): return n-1
+        al=a.lower()
+        for i,(lab,_s) in enumerate(TOURS):
+            if al in lab.lower(): return i
+        return None
+    fin=_finished_set()
+    cand=None
+    for i in range(len(TOURS)):
+        ms=_tour_matches(i)
+        if ms and sum(1 for m in ms if m in fin)>=len(ms): cand=i
+    return cand
+
+async def cmd_tour(u,c):
+    """Показать ИТОГИ тура в боте (без авто-постинга в канал)."""
+    idx=_resolve_tour_idx(c.args)
+    if idx is None:
+        if c.args:
+            await u.message.reply_text(
+                "\u2754 Тур н�� найден. Номера: 1\u20133 — группа, 4=1/16, 5=1/8, 6=1/4, 7=ПФ, 8=за 3-е, 9=финал.",
+                parse_mode=ParseMode.HTML); return
+        await u.message.reply_text(
+            "\u26bd Полностью сыгранных туров ещё нет.\n\u2192 /day — итоги за конкретный день.",
+            parse_mode=ParseMode.HTML); return
+    lines=_tour_results_lines(idx)
+    if lines is None:
+        await u.message.reply_text(
+            f"\u26bd По «{TOURS[idx][0]}» пока нет сыгранных матчей.",parse_mode=ParseMode.HTML); return
+    lines.append("\U0001f916 @wc2026_football_bot")
+    lines.append("\u2139\ufe0f Переслать этот пост в канал можно вручную, или /posttour "+str(idx+1)+".")
+    for p in split_text("\n".join(lines)):
+        await u.message.reply_text(p,parse_mode=ParseMode.HTML)
+
+async def cmd_posttour(u,c):
+    """Опубликовать ИТОГИ тура в канал вручную (только админ)."""
+    if not is_admin(u.effective_user.id):
+        await u.message.reply_text("\u274c Нет доступа."); return
+    ch=os.environ.get("CHANNEL_ID","")
+    if not ch:
+        await u.message.reply_text("\u26a0\ufe0f CHANNEL_ID не задан."); return
+    idx=_resolve_tour_idx(c.args)
+    if idx is None:
+        await u.message.reply_text(
+            "\u2754 Укажи тур: /posttour 4 (1/16), /posttour 9 (финал) и т.д.",parse_mode=ParseMode.HTML); return
+    lines=_tour_results_lines(idx)
+    if lines is None:
+        await u.message.reply_text(
+            f"\u26bd По «{TOURS[idx][0]}» пока нет сыгранных матчей.",parse_mode=ParseMode.HTML); return
+    lines.append("\U0001f916 @wc2026_football_bot")
+    for p in split_text("\n".join(lines)):
+        await c.bot.send_message(chat_id=ch,text=p,parse_mode=ParseMode.HTML)
+    set_meta(f"results_tour_posted_{idx}","1")
+    await u.message.reply_text(f"\u2705 Опубликовано в канал: {TOURS[idx][0]}",parse_mode=ParseMode.HTML)
+
 async def cmd_table(u,c):
     letters=[c.args[0].upper()] if (c.args and len(c.args[0])==1 and c.args[0].upper() in "ABCDEFGHIJKL") else list("ABCDEFGHIJKL")
     finished=get_all_finished()
@@ -2194,7 +2534,7 @@ async def cmd_table(u,c):
                 p=probs_.get(t,{}).get("P_R32",0)
                 if i<=2: mk="✅"
                 elif i==3 and t in third_set: mk="🟡"
-                else: mk="▫��"
+                else: mk="▫���"
                 lines.append(f"{i}. {mk} <b>{rt(t)}</b>  <i>{p*100:.0f}% на выход</i>")
         blocks.append("\n".join(lines))
     blocks.append("")
@@ -2758,7 +3098,7 @@ async def cmd_reload(u, c):
 
 async def cmd_set_live(u, c):
     if not is_admin(u.effective_user.id): return
-    if not c.args: return await u.message.reply_text("Использование: /set_live 2026-06-09_prematch")
+    if not c.args: return await u.message.reply_text("��спользование: /set_live 2026-06-09_prematch")
     lbl = c.args[0]
     import json
     with get_conn() as conn:
@@ -3153,7 +3493,7 @@ WELCOME = "\n".join([
     "🏁 /table — таблицы групп по очкам (фактические)",
     "👥 /squad — реальные составы и их стоимость (Transfermarkt)",
     "",
-    "📈 <b>СТАТИСТИКА</b>",
+    "📈 <b>СТАТИСТИК��</b>",
     "🎯 /stats — точность прогнозов нейросети",
     "📂 /history — архив версий прогноза",
     "🗂 /snapshots — список всех сохранённых версий",
@@ -3185,13 +3525,15 @@ HELP = "\n".join([
     "🌍 <b>Реальность</b> <i>(только факты)</i>",
     "/schedule [N|all] — расписание матчей",
     "/results [N] — реальные счета + сверка прогноза",
+    "/day [дата] — итоги игрового дня по запросу, без спойлеров в канал. Примеры: <code>/day</code>, <code>/day 2026-06-12</code>, <code>/day вчера</code>",
+    "/tour [N] — итоги тура (1-3 = группа, 4=1/16 … 9=финал); этот пост можно переслать в канал. Пример: <code>/tour 1</code>",
     "/table [X] — таблицы групп по очкам (фактические)",
     "/squad [команда] — реальные составы и их рыночная стоимость",
     "",
     "📈 <b>Статистика</b>",
     "/stats — точность прогнозов нейросети",
     "/history — архив версий прогноза",
-    "/elo_summary [команда] — сила команд по Elo: сейчас vs до старта ЧМ; с командой — подробно по сборной. Пример: <code>/elo_summary Аргентина</code>",
+    "/elo_summary [команда] — сила команд по Elo: сейчас vs до старта ЧМ; с ��омандой — подробно по сборной. Пример: <code>/elo_summary Аргентина</code>",
     "",
     "🔍 <b>Сравнение и архив версий</b>",
     "📌 <i>Версия — это сохранённый «снимок» прогноза. « live » — текущий прогноз.</i>",
@@ -3219,6 +3561,7 @@ HELP_ADMIN = "\n".join([
     "📣 <b>Публикация в канал</b>",
     "/post_preview — предпросмотр поста прогноза (без отправки). Пример: <code>/post_preview</code>",
     "/post_forecast — опубликовать прогноз в канал. Пример: <code>/post_forecast</code>",
+    "/posttour &lt;N&gt; — опубликовать итоги тура в канал вручную (плей-офф автоматически НЕ постится — слишком большие спойлеры). Пример: <code>/posttour 4</code>",
     "",
     "🧪 <b>Служебные</b>",
     "/sim_new · /sim_legacy · /predict_legacy — ручные прогоны симулятора/прогноза. Обычно не нужны — расчёт идёт автоматически.",
@@ -3257,6 +3600,8 @@ def main():
         ("diff",cmd_diff),("update",cmd_update),
         ("view",cmd_view),
         ("schedule",cmd_schedule),("results",cmd_results),
+        ("day",cmd_day),("itogi",cmd_day),("den",cmd_day),
+        ("tour",cmd_tour),("posttour",cmd_posttour),("post_tour",cmd_posttour),
         ("table",cmd_table),("value",cmd_value),("squad",cmd_squad),
         ("post_preview",cmd_post_preview),("post_forecast",cmd_post_forecast),
         ("elo_summary",cmd_elo_summary),
@@ -3301,16 +3646,23 @@ def main():
     app.add_error_handler(_on_error)
 
     if app.job_queue:
-        mh=int(os.environ.get("MORNING_POST_UTC_HOUR","2"))
-        rh=int(os.environ.get("RESULTS_POST_UTC_HOUR","16"))
-        app.job_queue.run_daily(job_morning, time=dtime(mh,0,tzinfo=timezone.utc))
-        app.job_queue.run_daily(job_results, time=dtime(rh,0,tzinfo=timezone.utc))
+        # Preview: posts each matchday's predictions ~PREVIEW_LEAD_HOURS before its
+        # first kickoff. Hourly check + per-day dedup => always BEFORE the matches,
+        # never skipped, never a day late, regardless of MSK/UTC day boundaries.
+        app.job_queue.run_repeating(job_preview, interval=3600, first=20)
+        results_on=os.environ.get("RESULTS_POST","1")!="0"
+        if results_on:
+            # Auto results recap: ONE post per GROUP-STAGE tour (Тур 1/2/3), only
+            # once all its matches finished. Playoff is NEVER auto-posted (huge
+            # spoilers) — publish manually via /posttour. RESULTS_POST=0 silences all.
+            poll=int(os.environ.get("RESULTS_POLL_SEC","9000"))
+            app.job_queue.run_repeating(job_results, interval=poll, first=120)
         app.job_queue.run_repeating(job_check_notifications, interval=7200, first=300)
         if os.environ.get("AUTO_UPDATE","1")!="0":
             ah=int(os.environ.get("AUTO_UPDATE_UTC_HOUR","17"))
             app.job_queue.run_daily(job_auto_update, time=dtime(ah,30,tzinfo=timezone.utc))
             log.info("Auto-update scheduled: %02d:30 UTC (sims=%s)",ah,os.environ.get("AUTO_UPDATE_SIMS","30000"))
-        log.info("Scheduled: morning=%02d:00 UTC, results=%02d:00 UTC, notify=2h",mh,rh)
+        log.info("Scheduled: preview=hourly, results=%s, notify=2h", "on" if results_on else "OFF")
 
     log.info("Bot started (%d commands)",len(handlers))
     app.run_polling(drop_pending_updates=True)
