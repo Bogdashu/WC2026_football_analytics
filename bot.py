@@ -502,6 +502,14 @@ def fmt_msk(kt):
     except Exception:
         return ""
 
+def _msk_date(d,h,a):
+    """МСК-дата старта матча; для ночных игр отличается от matchday d."""
+    kt=get_kickoff(d,h,a)
+    if kt:
+        try: return kt.astimezone(timezone(timedelta(hours=3))).date()
+        except Exception: pass
+    return d
+
 def get_finished_fixtures(match_date):
     try:
         with get_conn() as conn:
@@ -1029,7 +1037,7 @@ def fmt_detail(d,home,away,host,o1=None,ox=None,o2=None,kt=None):
     host_lbl=f"{rt(home)} дома" if not neutral else "нейтральное поле"
     if kt is None: kt=get_kickoff(d,home,away)
     kt_lbl=fmt_msk(kt)
-    date_line=f"\U0001f4c5 {fmt_date_ru(d)}"
+    date_line=f"\U0001f4c5 {fmt_date_ru(_msk_date(d,home,away))}"
     if kt_lbl: date_line+=f" \u00b7 \U0001f552 {kt_lbl}"
     date_line+=f" \u00b7 Группа\u00a0{grp} \u00b7 {host_lbl}"
     lines=[
@@ -1063,7 +1071,7 @@ def fmt_channel(d,home,away,host,o1=None,ox=None,o2=None):
     grp=get_team_group(home) or "?"
     host_lbl=f"{rt(home)} дома" if not neutral else "нейтральное поле"
     kt_lbl=fmt_msk(get_kickoff(d,home,away))
-    date_line=f"\U0001f4c5 {fmt_date_ru(d)}"
+    date_line=f"\U0001f4c5 {fmt_date_ru(_msk_date(d,home,away))}"
     if kt_lbl: date_line+=f" \u00b7 \U0001f552 {kt_lbl}"
     date_line+=f" \u00b7 Группа\u00a0{grp} \u00b7 {host_lbl}"
     lines=[
@@ -1386,7 +1394,7 @@ async def cmd_match(u,c):
             parse_mode=ParseMode.HTML); return
     d=target_date or date.today()
     card=fmt_detail(d, team_a, team_b, host="0")
-    head="\U0001f52e <b>ГИПОТЕТИЧЕСКИЙ МАТЧ</b>\n<i>В расписании не нашёл — считаю на нейтральном поле</i>"
+    head="\U0001f52e <b>ГИПОТЕТИЧЕСКИЙ МАТЧ</b>\n<i>В расписании н�� нашёл — считаю на нейтральном поле</i>"
     await u.message.reply_text(f"{head}\n{SEP}\n\n{card}", parse_mode=ParseMode.HTML)
 
 async def cmd_team(u,c):
@@ -1648,7 +1656,7 @@ async def cmd_diff(u,c):
         lines.append(f"{arrow} <b>{esc(ru_team(t))}</b>: {wa:.2f}% \u2192 {wb:.2f}% (<b>{sign}{d:.2f}пп</b>)")
         shown+=1
     if shown==0:
-        lines.append("<i>заметных изменений нет (все дельты &lt; 0.01пп)</i>")
+        lines.append("<i>заметных изменени�� нет (все дельты &lt; 0.01пп)</i>")
     champ_a=(a.get("modal_forecast") or {}).get("modal_champion")
     champ_b=(b.get("modal_forecast") or {}).get("modal_champion")
     if champ_a or champ_b:
@@ -1748,8 +1756,15 @@ async def _post_today_to_channel(bot,ch,day=None):
     rows=get_fixtures(today,today,limit=20)
     if not rows: return False
     record_predictions(rows)   # сохраняем прогнозы один раз
+    _mds=sorted({_msk_date(r[0],r[1],r[2]) for r in rows})
+    if len(_mds)>1 and _mds[0].month==_mds[-1].month:
+        _hdr=f"{_mds[0].day}\u2013{fmt_date_ru(_mds[-1])}".upper()
+    elif len(_mds)>1:
+        _hdr=f"{fmt_date_ru(_mds[0])} \u2013 {fmt_date_ru(_mds[-1])}".upper()
+    else:
+        _hdr=fmt_date_ru(_mds[0]).upper()
     lines=[
-        f"\u26bd <b>МАТЧИ {fmt_date_ru(today).upper()}</b>",
+        f"\u26bd <b>МАТЧИ {_hdr}</b>",
         "<i>Прогнозы нейросети на игровой день</i>",f"{SEP}",""
     ]
     for r in rows: lines+=[fmt_channel(*r),f"{DASH}",""]
@@ -3308,7 +3323,7 @@ async def cmd_compare_top(u, c):
             "🔍 <b>Сравнение версий прогноза</b>\n"
             f"{SEP}\n\n"
             "<b>По всем стадиям:</b>\n"
-            "<code>/compare &lt;версия1&gt; &lt;версия2&gt;</code>\n"
+            "<code>/compare &lt;версия1&gt; &lt;в��рсия2&gt;</code>\n"
             "Пример: <code>/compare live 2026-06-09_prematch</code>\n\n"
             "<b>По конкретному матчу:</b>\n"
             "<code>/compare &lt;версия1&gt; &lt;версия2&gt; &lt;команда&gt; &lt;соперник&gt;</code>\n"
@@ -3503,7 +3518,7 @@ WELCOME = "\n".join([
     "💰 <b>СТАВКИ (только в боте, не в канал)</b>",
     "💰 /value — где модель видит перевес над букмекером",
     "",
-    "ℹ️ /about — о модели · ❓ /help — справка",
+    "ℹ️ /about — о модели · ❓ /help �� справка",
     SEP,
     "📢 Канал: @WC2026Neuro · 🤖 @wc2026_football_bot",
 ])
@@ -3556,7 +3571,7 @@ HELP_ADMIN = "\n".join([
     "📥 <b>Данные и прогноз</b>",
     "/update — подгрузить свежие результаты матчей и пересверить прогноз (базовый прогноз замораживается). Пример: <code>/update</code>",
     "/set_live &lt;версия&gt; — назначить выбранный снимок текущим прогнозом (live) для всех. Пример: <code>/set_live prematch_FROZEN</code>",
-    "/reload — заново подтянуть прогноз и Elo из базы (без обращения к внешним источникам). Нужен после ручной заливки данных. Пример: <code>/reload</code>",
+    "/reload — заново подтянуть прогноз и Elo из базы (без обращения к внешн��м источникам). Нужен после ручной заливки данных. Пример: <code>/reload</code>",
     "",
     "📣 <b>Публикация в канал</b>",
     "/post_preview — предпросмотр поста прогноза (без отправки). Пример: <code>/post_preview</code>",
