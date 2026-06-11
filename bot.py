@@ -510,6 +510,16 @@ def _msk_date(d,h,a):
         except Exception: pass
     return d
 
+def get_fixtures_msk(msk_day, limit=30):
+    """Все матчи, чей старт приходится на КАЛЕНДАРНУЮ дату МСК msk_day.
+    Захватывает stored match_date {msk_day-1, msk_day}: ночная игра (напр.
+    05:00 МСК) по МСК относится к следующему дню, но хранится под предыдущим
+    match_date. Сортировка — по времени старта."""
+    rows=get_fixtures(msk_day-timedelta(days=1), msk_day, limit=limit*3)
+    out=[r for r in rows if _msk_date(r[0],r[1],r[2])==msk_day]
+    out.sort(key=lambda r:(get_kickoff(r[0],r[1],r[2]) or datetime.min.replace(tzinfo=timezone.utc)))
+    return out[:limit]
+
 def get_finished_fixtures(match_date):
     try:
         with get_conn() as conn:
@@ -531,15 +541,15 @@ def get_finished_fixtures(match_date):
 MSK_TZ = timezone(timedelta(hours=3))
 
 def _matchday_kickoffs():
-    """{match_date: earliest_kickoff_utc} grouped by the STORED match_date — the
-    same day-grouping get_fixtures and the channel post use. This keeps a late
-    game (e.g. 05:00 МСК) together with its matchday instead of splitting it onto
-    the next calendar date."""
+    """{msk_date: earliest_kickoff_utc} сгруппировано по КАЛЕНДАРНОЙ дате МСК
+    каждого старта — ровно тот день, который видит пользователь. Ночная игра
+    (напр. 05:00 МСК) относится к своей дате МСК, а не к US-match_date."""
     if _KICKOFFS is None: _load_kickoffs()
     days={}
     for (d,h,a),kt in (_KICKOFFS or {}).items():
         if not kt: continue
-        if d not in days or kt<days[d]: days[d]=kt
+        msk=kt.astimezone(timezone(timedelta(hours=3))).date()
+        if msk not in days or kt<days[msk]: days[msk]=kt
     return days
 
 def next_matchday(now=None):
@@ -550,14 +560,14 @@ def next_matchday(now=None):
     fut.sort(key=lambda x:x[1]); return fut[0]
 
 def _matchday_total(md):
-    """How many matches are scheduled on MSK date md."""
-    return len(get_fixtures(md, md, limit=50))
+    """Сколько матчей в календарную дату МСК md."""
+    return len(get_fixtures_msk(md, limit=50))
 
 def _upcoming_fixture_days(limit_days=10):
     """Distinct MSK match_dates from today forward (fallback when kickoff unseeded)."""
     today=datetime.now(MSK_TZ).date()
-    rows=get_fixtures(today, today+timedelta(days=limit_days), limit=150)
-    return sorted({r[0] for r in rows})
+    rows=get_fixtures(today-timedelta(days=1), today+timedelta(days=limit_days), limit=200)
+    return sorted({_msk_date(r[0],r[1],r[2]) for r in rows if _msk_date(r[0],r[1],r[2])>=today})
 
 def _preview_due_matchday():
     """MSK date whose preview should go out now: within PREVIEW_LEAD_HOURS of the
@@ -1291,8 +1301,8 @@ async def _send_fixtures(u,title,rows):
         await u.message.reply_text(p,parse_mode=ParseMode.HTML)
 
 async def cmd_today(u,c):
-    today=date.today()
-    rows=get_fixtures(today,today,limit=MAX_NEXT)
+    today=datetime.now(MSK_TZ).date()
+    rows=get_fixtures_msk(today,limit=MAX_NEXT)
     if not rows:
         await u.message.reply_text(
             f"\u26bd Сегодня ({fmt_date_ru(today)}) матчей нет.\n\u2192 /next — ближайшие",
@@ -1300,8 +1310,8 @@ async def cmd_today(u,c):
     await _send_fixtures(u,f"МАТЧИ {fmt_date_ru(today).upper()}",rows)
 
 async def cmd_tomorrow(u,c):
-    tomorrow=date.today()+timedelta(days=1)
-    rows=get_fixtures(tomorrow,tomorrow,limit=MAX_NEXT)
+    tomorrow=datetime.now(MSK_TZ).date()+timedelta(days=1)
+    rows=get_fixtures_msk(tomorrow,limit=MAX_NEXT)
     if not rows:
         await u.message.reply_text(
             f"\u26bd Завтра ({fmt_date_ru(tomorrow)}) матчей нет.\n\u2192 /next — ближайшие",
@@ -1394,7 +1404,7 @@ async def cmd_match(u,c):
             parse_mode=ParseMode.HTML); return
     d=target_date or date.today()
     card=fmt_detail(d, team_a, team_b, host="0")
-    head="\U0001f52e <b>ГИПОТЕТИЧЕСКИЙ МАТЧ</b>\n<i>В расписании н�� нашёл — считаю на нейтральном поле</i>"
+    head="\U0001f52e <b>ГИПОТЕТИЧЕСКИЙ МАТЧ</b>\n<i>В расписании не нашёл — считаю на нейтральном поле</i>"
     await u.message.reply_text(f"{head}\n{SEP}\n\n{card}", parse_mode=ParseMode.HTML)
 
 async def cmd_team(u,c):
@@ -1656,7 +1666,7 @@ async def cmd_diff(u,c):
         lines.append(f"{arrow} <b>{esc(ru_team(t))}</b>: {wa:.2f}% \u2192 {wb:.2f}% (<b>{sign}{d:.2f}пп</b>)")
         shown+=1
     if shown==0:
-        lines.append("<i>заметных изменени�� нет (все дельты &lt; 0.01пп)</i>")
+        lines.append("<i>заметных изменений нет (все дельты &lt; 0.01пп)</i>")
     champ_a=(a.get("modal_forecast") or {}).get("modal_champion")
     champ_b=(b.get("modal_forecast") or {}).get("modal_champion")
     if champ_a or champ_b:
@@ -1753,7 +1763,7 @@ async def cmd_update(u,c):
 
 async def _post_today_to_channel(bot,ch,day=None):
     today=day or datetime.now(MSK_TZ).date()
-    rows=get_fixtures(today,today,limit=20)
+    rows=get_fixtures_msk(today,limit=20)
     if not rows: return False
     record_predictions(rows)   # сохраняем прогнозы один раз
     _mds=sorted({_msk_date(r[0],r[1],r[2]) for r in rows})
@@ -1816,13 +1826,36 @@ async def _post_forecast_to_channel(bot,ch):
         await bot.send_message(chat_id=ch,text=p,parse_mode=ParseMode.HTML)
     return True
 
+def _parse_msk_day(c):
+    md=datetime.now(MSK_TZ).date()
+    if c.args:
+        a=str(c.args[0]).strip().lower()
+        if a in ("сегодня","today"): md=datetime.now(MSK_TZ).date()
+        elif a in ("завтра","tomorrow"): md=datetime.now(MSK_TZ).date()+timedelta(days=1)
+        elif a in ("вчера","yesterday"): md=datetime.now(MSK_TZ).date()-timedelta(days=1)
+        else:
+            try: md=date.fromisoformat(a)
+            except Exception: pass
+    return md
+
 async def cmd_post_preview(u,c):
+    """ПРЕДПРОСМОТР: показывает пост матчей дня тебе в личку; в канал НЕ отправляет."""
+    if not is_admin(u.effective_user.id):
+        await u.message.reply_text("\u274c Нет доступа."); return
+    md=_parse_msk_day(c)
+    await u.message.reply_text(f"\U0001f50e <b>ПРЕДПРОСМОТР за {fmt_date_ru(md)}</b> — в канал НЕ отправлено.\nОпубликовать в канал: <code>/post_day {md.isoformat()}</code>", parse_mode=ParseMode.HTML)
+    ok=await _post_today_to_channel(c.bot,u.effective_chat.id,md)
+    if not ok: await u.message.reply_text(f"\u26bd На {fmt_date_ru(md)} матчей нет.")
+
+async def cmd_post_day(u,c):
+    """Публикует пост матчей дня В КАНАЛ (раньше это делал /post_preview)."""
     if not is_admin(u.effective_user.id):
         await u.message.reply_text("\u274c Нет доступа."); return
     ch=os.environ.get("CHANNEL_ID","")
     if not ch: await u.message.reply_text("\u274c CHANNEL_ID не задан."); return
-    ok=await _post_today_to_channel(c.bot,ch)
-    await u.message.reply_text("\u2705 Пост отправлен." if ok else "\u26bd Сегодня матчей нет.")
+    md=_parse_msk_day(c)
+    ok=await _post_today_to_channel(c.bot,ch,md)
+    await u.message.reply_text(f"\u2705 Опубликовано в канал за {fmt_date_ru(md)}." if ok else f"\u26bd На {fmt_date_ru(md)} матчей нет.", parse_mode=ParseMode.HTML)
 
 async def cmd_post_forecast(u,c):
     if not is_admin(u.effective_user.id):
@@ -3323,7 +3356,7 @@ async def cmd_compare_top(u, c):
             "🔍 <b>Сравнение версий прогноза</b>\n"
             f"{SEP}\n\n"
             "<b>По всем стадиям:</b>\n"
-            "<code>/compare &lt;версия1&gt; &lt;в��рсия2&gt;</code>\n"
+            "<code>/compare &lt;версия1&gt; &lt;версия2&gt;</code>\n"
             "Пример: <code>/compare live 2026-06-09_prematch</code>\n\n"
             "<b>По конкретному матчу:</b>\n"
             "<code>/compare &lt;версия1&gt; &lt;версия2&gt; &lt;команда&gt; &lt;соперник&gt;</code>\n"
@@ -3518,7 +3551,7 @@ WELCOME = "\n".join([
     "💰 <b>СТАВКИ (только в боте, не в канал)</b>",
     "💰 /value — где модель видит перевес над букмекером",
     "",
-    "ℹ️ /about — о модели · ❓ /help �� справка",
+    "ℹ️ /about — о модели · ❓ /help — справка",
     SEP,
     "📢 Канал: @WC2026Neuro · 🤖 @wc2026_football_bot",
 ])
@@ -3571,10 +3604,11 @@ HELP_ADMIN = "\n".join([
     "📥 <b>Данные и прогноз</b>",
     "/update — подгрузить свежие результаты матчей и пересверить прогноз (базовый прогноз замораживается). Пример: <code>/update</code>",
     "/set_live &lt;версия&gt; — назначить выбранный снимок текущим прогнозом (live) для всех. Пример: <code>/set_live prematch_FROZEN</code>",
-    "/reload — заново подтянуть прогноз и Elo из базы (без обращения к внешн��м источникам). Нужен после ручной заливки данных. Пример: <code>/reload</code>",
+    "/reload — заново подтянуть прогноз и Elo из базы (без обращения к внешним источникам). Нужен после ручной заливки данных. Пример: <code>/reload</code>",
     "",
     "📣 <b>Публикация в канал</b>",
-    "/post_preview — предпросмотр поста прогноза (без отправки). Пример: <code>/post_preview</code>",
+    "/post_preview [дата] — ПРЕДПРОСМОТР поста матчей дня тебе в личку (в канал НЕ отправляется). Примеры: <code>/post_preview</code>, <code>/post_preview 2026-06-12</code>",
+    "/post_day [дата] — опубликовать матчи дня В КАНАЛ. Примеры: <code>/post_day</code>, <code>/post_day завтра</code>",
     "/post_forecast — опубликовать прогноз в канал. Пример: <code>/post_forecast</code>",
     "/posttour &lt;N&gt; — опубликовать итоги тура в канал вручную (плей-офф автоматически НЕ постится — слишком большие спойлеры). Пример: <code>/posttour 4</code>",
     "",
@@ -3618,7 +3652,7 @@ def main():
         ("day",cmd_day),("itogi",cmd_day),("den",cmd_day),
         ("tour",cmd_tour),("posttour",cmd_posttour),("post_tour",cmd_posttour),
         ("table",cmd_table),("value",cmd_value),("squad",cmd_squad),
-        ("post_preview",cmd_post_preview),("post_forecast",cmd_post_forecast),
+        ("post_preview",cmd_post_preview),("post_day",cmd_post_day),("post_today",cmd_post_day),("post_forecast",cmd_post_forecast),
         ("elo_summary",cmd_elo_summary),
         # Dev-only legacy comparison commands
         ("predict_legacy",cmd_predict_legacy),
