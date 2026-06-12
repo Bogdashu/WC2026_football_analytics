@@ -824,8 +824,9 @@ def record_predictions(fixtures):
                     code=outcome_code(p_h,p_d,p_a)
                     stage="group" if get_team_group(home) else "knockout"
                     try:
-                        sc=predict_scoreline(home,away,neutral)
-                        psh,psa=(sc[0][0],sc[0][1]) if sc else (None,None)
+                        # Сохраняем ИМЕННО тот счёт, что публикуется в карточке канала
+                        bs=best_score_for(home,away,neutral,natural_code(p_h,p_d,p_a))
+                        psh,psa=(bs[0],bs[1]) if bs else (None,None)
                     except Exception:
                         psh,psa=None,None
                     def _f(x):
@@ -852,15 +853,19 @@ def resolve_predictions(match_date):
                     try: hs=int(hs); as_=int(as_)
                     except Exception: pass
                     actual="H" if hs>as_ else ("A" if as_>hs else "D")
-                    # Точный счёт засчитывается, если реальный счёт попал в Топ-3 модели
-                    top3=set()
+                    # Точный счёт засчитан, если реальный счёт = ОПУБЛИКОВАННОМУ прогнозу
+                    # ИЛИ попал в Топ-3 самых вероятных счётов модели.
+                    accept=set()
                     try:
                         _neu=str(host)!="1"
                         for _h,_a,_p in predict_scoreline(home,away,_neu):
-                            top3.add((int(_h),int(_a)))
+                            accept.add((int(_h),int(_a)))
+                        _ph,_pd,_pa=predict_1x2(home,away,_neu)
+                        _bs=best_score_for(home,away,_neu,natural_code(_ph,_pd,_pa))
+                        if _bs: accept.add((int(_bs[0]),int(_bs[1])))
                     except Exception:
                         pass
-                    try: exact = ((int(hs),int(as_)) in top3) if top3 else None
+                    try: exact = ((int(hs),int(as_)) in accept) if accept else None
                     except Exception: exact = None
                     cur.execute(
                         "UPDATE wc2026_predictions "
@@ -3686,7 +3691,7 @@ HELP_ADMIN = "\n".join([
     "/post_preview [дата] — ПРЕДПРОСМОТР поста матчей дня тебе в личку (в канал НЕ отправляется). Примеры: <code>/post_preview</code>, <code>/post_preview 2026-06-12</code>",
     "/post_day [дата] — опубликовать матчи дня В КАНАЛ. Примеры: <code>/post_day</code>, <code>/post_day завтра</code>",
     "/post_forecast — опубликовать прогноз в канал. Пример: <code>/post_forecast</code>",
-    "/posttour &lt;N&gt; — опубликовать итоги тура в канал вручную \(плей-офф автоматически НЕ постится — слишком большие спойлеры). Пример: <code>/posttour 4</code>",
+    "/posttour &lt;N&gt; — опубликовать итоги тура в канал вручную (плей-офф автоматически НЕ постится — слишком большие спойлеры). Пример: <code>/posttour 4</code>",
     "",
     "🧪 <b>Служебные</b>",
     "/sim_new · /sim_legacy · /predict_legacy — ручные прогоны симулятора/прогноза. Обычно не нужны — расчёт идёт автоматически.",
