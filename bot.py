@@ -531,6 +531,18 @@ def get_finished_fixtures(match_date):
                 return cur.fetchall()
     except: return []
 
+def live_matches_played():
+    """Реальное число сыгранных матчей из таблицы результатов
+    (не из замороженного baseline, где matches_played может отставать)."""
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM wc2026_fixtures WHERE home_score IS NOT NULL")
+                r=cur.fetchone()
+                return int(r[0]) if r and r[0] is not None else 0
+    except Exception:
+        return 0
+
 
 # ============================================================
 # Matchday-aware scheduling helpers
@@ -837,6 +849,8 @@ def resolve_predictions(match_date):
         with get_conn() as conn:
             with conn.cursor() as cur:
                 for d,home,away,hs,as_,host in finished:
+                    try: hs=int(hs); as_=int(as_)
+                    except Exception: pass
                     actual="H" if hs>as_ else ("A" if as_>hs else "D")
                     # Точный счёт засчитывается, если реальный счёт попал в Топ-3 модели
                     top3=set()
@@ -846,7 +860,8 @@ def resolve_predictions(match_date):
                             top3.add((int(_h),int(_a)))
                     except Exception:
                         pass
-                    exact = ((hs,as_) in top3) if top3 else None
+                    try: exact = ((int(hs),int(as_)) in top3) if top3 else None
+                    except Exception: exact = None
                     cur.execute(
                         "UPDATE wc2026_predictions "
                         "SET actual_home=%s,actual_away=%s,actual_code=%s,"
@@ -1231,7 +1246,7 @@ async def cmd_help(u,c):
         await u.message.reply_text(_p, parse_mode=ParseMode.HTML)
 
 async def cmd_about(u,c):
-    played = BASELINE.get("matches_played",0)
+    played = live_matches_played()
     total  = BASELINE.get("matches_total", 72)
     gen    = BASELINE.get("resimulated_at") or (BASELINE.get("generated_at","") or "")[:10]
     sims   = BASELINE.get("sims",SIMS_DISPLAY)
@@ -1255,7 +1270,7 @@ async def cmd_reload(u,c):
         await u.message.reply_text("\u274c Нет доступа."); return
     await u.message.reply_text("\u23f3 Перечитываю данные\u2026")
     load_all()
-    played=BASELINE.get("matches_played",0); total=BASELINE.get("matches_total",72)
+    played=live_matches_played(); total=BASELINE.get("matches_total",72)
     await u.message.reply_text(
         f"\u2705 Готово. Elo: {len(ELO)} команд · Сыграно: {played}/{total}",
         parse_mode=ParseMode.HTML)
@@ -1798,7 +1813,7 @@ async def cmd_update(u,c):
     # resolve yesterday's predictions too
     resolve_predictions(date.today()-timedelta(days=1))
     resolve_predictions(date.today())
-    played=BASELINE.get("matches_played",0); total=BASELINE.get("matches_total",72)
+    played=live_matches_played(); total=BASELINE.get("matches_total",72)
     notif=get_pending_notification()
     if notif and ch:
         try:
@@ -3671,7 +3686,7 @@ HELP_ADMIN = "\n".join([
     "/post_preview [дата] — ПРЕДПРОСМОТР поста матчей дня тебе в личку (в канал НЕ отправляется). Примеры: <code>/post_preview</code>, <code>/post_preview 2026-06-12</code>",
     "/post_day [дата] — опубликовать матчи дня В КАНАЛ. Примеры: <code>/post_day</code>, <code>/post_day завтра</code>",
     "/post_forecast — опубликовать прогноз в канал. Пример: <code>/post_forecast</code>",
-    "/posttour &lt;N&gt; — опубликовать итоги тура в канал вручную (плей-офф автоматически НЕ постится — слишком большие спойлеры). Пример: <code>/posttour 4</code>",
+    "/posttour &lt;N&gt; — опубликовать итоги тура в канал вручную \(плей-офф автоматически НЕ постится — слишком большие спойлеры). Пример: <code>/posttour 4</code>",
     "",
     "🧪 <b>Служебные</b>",
     "/sim_new · /sim_legacy · /predict_legacy — ручные прогоны симулятора/прогноза. Обычно не нужны — расчёт идёт автоматически.",
