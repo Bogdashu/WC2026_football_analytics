@@ -838,14 +838,23 @@ def resolve_predictions(match_date):
             with conn.cursor() as cur:
                 for d,home,away,hs,as_,host in finished:
                     actual="H" if hs>as_ else ("A" if as_>hs else "D")
+                    # Точный счёт засчитывается, если реальный счёт попал в Топ-3 модели
+                    top3=set()
+                    try:
+                        _neu=str(host)!="1"
+                        for _h,_a,_p in predict_scoreline(home,away,_neu):
+                            top3.add((int(_h),int(_a)))
+                    except Exception:
+                        pass
+                    exact = ((hs,as_) in top3) if top3 else None
                     cur.execute(
                         "UPDATE wc2026_predictions "
                         "SET actual_home=%s,actual_away=%s,actual_code=%s,"
                         "    correct=(pred_code=%s),"
-                        "    exact_correct=(pred_score_h=%s AND pred_score_a=%s),"
+                        "    exact_correct=%s,"
                         "    resolved_at=now() "
-                        "WHERE match_date=%s AND home=%s AND away=%s AND actual_code IS NULL",
-                        (hs,as_,actual,actual,hs,as_,d,home,away))
+                        "WHERE match_date=%s AND home=%s AND away=%s",
+                        (hs,as_,actual,actual,exact,d,home,away))
                     n+=cur.rowcount
             conn.commit()
     except Exception as e:
@@ -1025,12 +1034,22 @@ def best_score_for(home,away,neutral,code):
     """Самый вероятный точный счёт, СОГЛАСОВАННЫЙ с прогнозом 1X2.
     Решает путаницу 'победа, но счёт ничейный': для победы берём топ счёт
     с перевесом нужной команды, для ничьи — топ ничейный счёт."""
-    full=predict_scoreline(home,away,neutral,top=49)
-    if not full: return None
     def ok(h,a):
         if code=="H": return h>a
         if code=="A": return a>h
         return h==a
+    # 1) Счёт из симуляции (Dixon-Coles, argmax) — точнее Пуассона.
+    # Берём его, ТОЛЬКО если он согласован с прогнозом-исходом (иначе откат).
+    try:
+        ms=(BASELINE.get("modal_scores",{}) or {}).get(f"{home}|{away}")
+        if ms and ":" in ms:
+            mh,ma=ms.split(":"); mh=int(mh); ma=int(ma)
+            if ok(mh,ma): return (mh,ma,None)
+    except Exception:
+        pass
+    # 2) Иначе — топ счёт по Пуассону, согласованный с исходом.
+    full=predict_scoreline(home,away,neutral,top=49)
+    if not full: return None
     for h,a,p in full:
         if ok(h,a): return (h,a,p)
     return full[0]
@@ -1590,7 +1609,7 @@ async def cmd_stats(u,c):
                 "\U0001f3af <b>ТОЧНЫЙ СЧЁТ</b>\n"
                 f"{SEP}\n\n"
                 f"Угадан точный счёт: <b>{ec}/{er}</b> ({ec/er*100:.1f}%)  <code>{bar(ec/er)}</code>\n\n"
-                "<i>\u042dто сложно: \u0443 \u043b\u044e\u0434\u0435\u0439 \u043e\u0431\u044b\u0447\u043d\u043e 6\u201310%. \u0421\u0447\u0438\u0442\u0430\u0435\u0442\u0441\u044f \u0441\u0442\u0440\u043e\u0433\u043e: \u0440\u043e\u0432\u043d\u043e \u0442\u043e\u0442 \u0436\u0435 \u0441\u0447\u0451\u0442, \u0447\u0442\u043e \u043f\u0440\u0435\u0434\u0441\u043a\u0430\u0437\u0430\u043d (\u0438\u0437 \u0422\u043e\u043f-3 \u0431\u0435\u0440\u0451\u043c \u22161).</i>",
+                "<i>Это сложно: у людей обычно 6\u201310%. Засчитывается, если реальный счёт попал в Топ-3 самых вероятных счётов модели.</i>",
                 parse_mode=ParseMode.HTML)
     except Exception as _ex:
         log.warning("exact-score block: %s", _ex)
