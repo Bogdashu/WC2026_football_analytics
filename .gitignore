@@ -1,17 +1,23 @@
-*
+# Python build / cache
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
 
-!.gitignore
-!README.md
-!requirements.txt
-!Procfile
+# Local env & secrets
+.env
+.env.*
 
-!bot.py
-!wc2026_simulate.py
-!wc2026_seed_kickoffs.py
-!wc2026_upload_baseline.py
-!wc2026_fix_db_groups.py
-!wc2026_relabel_groups.py
-!wc2026_ingest_results.py
+# Local archives & one-off patch helpers
+*.zip
+_patch_*.py
 
-!wc2026_elo.csv
-!wc2026_squads.csv
+# Simulation OUTPUTS (regenerated at runtime — not needed in deploy).
+# NOTE: matches only baseline result files, NOT the model inputs
+# wc2026_goalmodel.json / wc2026_calibrator.json, which MUST stay tracked.
+wc2026_baseline*.json
+
+# OS junk
+.DS_Store
+Thumbs.db
