@@ -38,7 +38,30 @@ import pandas as pd
 
 import wc2026_model as M
 import calibrator
-from wc2026_predict import resolve as _resolve_team, UnknownTeam
+try:
+    from wc2026_predict import resolve as _resolve_team, UnknownTeam
+except (ImportError, ModuleNotFoundError):
+    # Fallback: unify name resolution onto wc2026_names.canon (single source of
+    # truth) when the deployed wc2026_predict.py lacks resolve()/UnknownTeam.
+    from wc2026_names import canon as _wc_canon
+
+    class UnknownTeam(Exception):
+        pass
+
+    def _resolve_team(name, ratings=None):
+        if not name:
+            raise UnknownTeam(str(name))
+        if ratings is not None and name in ratings:
+            return name
+        c = _wc_canon(name)
+        if ratings is None:
+            return c
+        if c in ratings:
+            return c
+        for k in ratings:
+            if _wc_canon(k) == c:
+                return k
+        raise UnknownTeam(str(name))
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
