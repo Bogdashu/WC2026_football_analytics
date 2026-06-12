@@ -1177,8 +1177,6 @@ def fmt_channel(d,home,away,host,o1=None,ox=None,o2=None):
     try:
         bs=best_score_for(home,away,neutral,natural_code(p_h,p_d,p_a))
         if bs: lines+=["",f"\U0001f3af <b>Вероятный счёт:</b> <code>{bs[0]}:{bs[1]}</code>"]
-        alt=alt_outcome_line(home,away,neutral,p_h,p_d,p_a)
-        if alt: lines+=[alt]
     except Exception: pass
     sn=sensation_note(home,away,p_h,p_d,p_a,o1,ox,o2)
     if sn: lines+=["",f"<i>{esc(sn)}</i>"]
