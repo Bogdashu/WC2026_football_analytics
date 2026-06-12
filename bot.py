@@ -22,6 +22,7 @@ from html import escape as html_escape
 from collections import defaultdict
 
 import psycopg2
+from wc2026_names import canon as _wc_canon  # единый источник имён команд
 from telegram import Bot, Update
 from telegram.constants import ParseMode
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -238,7 +239,7 @@ def _norm_team(name):
     s = "".join(ch for ch in s if not _ud.combining(ch))
     s = s.lower().replace("'"," ").replace("-"," ").replace("."," ")
     s = " ".join(s.split())
-    return _GROUP_ALIASES.get(s, s)
+    return _wc_canon(name)  # единая таблица алиасов (wc2026_names)
 _OFFICIAL_NORM = {}
 for _L,_ts in _OFFICIAL_GROUPS.items():
     for _t in _ts: _OFFICIAL_NORM[_norm_team(_t)] = _L
@@ -956,6 +957,9 @@ def _resolve_squad_key(team):
     if team in SQUADS: return team
     pool=list(SQUAD_VALUE) or list(SQUADS)
     if not pool: return None
+    cv={_norm_team(k):k for k in pool}
+    k=cv.get(_norm_team(team))
+    if k: return k
     rv={ru_team(k):k for k in pool}
     k=rv.get(ru_team(team))
     if k: return k
