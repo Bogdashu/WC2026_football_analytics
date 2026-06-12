@@ -1,16 +1,16 @@
 # -*- coding: utf-8 -*-
 """wc2026_audit_names.py - ПРОВЕРЯЕМАЯ ГАРАНТИЯ имён команд.
 
-Проверяет, что каждое имя команды во ВСЕХ источниках (wc2026_elo,
-wc2026_groups, wc2026_fixtures) сводится к одной из 48 официальных сборных
-через единый canon(). Ловит ровно тот класс багов, из-за которого
-«Czechia» превращалась в 1500 и штраф уходил в «призрачную» строку.
+ВАЖНО: wc2026_elo - это ГЛОБАЛЬНЫЙ Elo-датасет (~336 сборных мира).
+Наличие не-участников ЧМ (Italy, Denmark, Abkhazia, ...) - ЭТО НОРМА, не баг.
+Используются только 48 официальных, поэтому проверяем ИМЕННО их.
 
-Проверки:
-  1) каждое имя из elo/groups/fixtures → canon ∈ 48 официальных;
-  2) нет двух строк wc2026_elo с одинаковым canon («призраки»);
-  3) все 48 сборных присутствуют в wc2026_elo;
-  4) каждая команда из fixtures имеет elo-строку (по canon).
+Проверки (реальные риски):
+  1) все 48 официальных сборных присутствуют в wc2026_elo (по canon);
+  2) НЕТ призраков-дублей: две строки elo с одним canon из числа 48
+     (именно так штраф уходил в 'Czechia' мимо 'Czech Republic');
+  3) все имена в wc2026_groups сводятся к 48 (там должны быть только участники);
+  4) все home/away в wc2026_fixtures сводятся к 48.
 
 Запуск:  python -X utf8 wc2026_audit_names.py
 Код выхода 0 = ГАРАНТИЯ: 0 проблем; иначе — список проблем и код 1.
@@ -36,45 +36,44 @@ def main():
     conn = psycopg2.connect(DB_URL)
     try:
         with conn.cursor() as cur:
-            elo_rows  = [r[0] for r in _fetch(cur, "SELECT team FROM wc2026_elo")]
-            grp_rows  = [r[0] for r in _fetch(cur, "SELECT team FROM wc2026_groups")]
+            elo_rows = [r[0] for r in _fetch(cur, "SELECT team FROM wc2026_elo")]
+            grp_rows = [r[0] for r in _fetch(cur, "SELECT team FROM wc2026_groups")]
             fx = _fetch(cur, "SELECT home, away FROM wc2026_fixtures")
             fx_rows = [t for pair in fx for t in pair]
-
-        # 1) всё резолвится к 48 официальным
-        for label, names in [("wc2026_elo", elo_rows), ("wc2026_groups", grp_rows), ("wc2026_fixtures", fx_rows)]:
-            unknown = sorted({n for n in names if canon(n) not in OFFICIAL_CANON})
-            for n in unknown:
-                problems.append(f"[{label}] неопознаное имя: {n!r} (canon={canon(n)!r})")
-
-        # 2) призрачные дубли в wc2026_elo (два разных написания — один canon)
-        by_canon = defaultdict(list)
-        for t in elo_rows:
-            by_canon[canon(t)].append(t)
-        for c, variants in by_canon.items():
-            if len(variants) > 1:
-                problems.append(f"[wc2026_elo] дубли по canon={c!r}: {variants}")
-
-        # 3) все 48 есть в elo
-        elo_canon = set(by_canon.keys())
-        for t in OFFICIAL:
-            if canon(t) not in elo_canon:
-                problems.append(f"[wc2026_elo] нет строки для официальной сборной: {t!r}")
-
-        # 4) каждая команда fixtures имеет elo (по canon)
-        for n in sorted(set(fx_rows)):
-            if canon(n) in OFFICIAL_CANON and canon(n) not in elo_canon:
-                problems.append(f"[fixtures→elo] команда {n!r} не найдена в wc2026_elo")
     finally:
         conn.close()
 
-    print("=" * 48)
+    # Индекс elo по canon
+    elo_by_canon = defaultdict(list)
+    for t in elo_rows:
+        elo_by_canon[canon(t)].append(t)
+
+    # 1) все 48 присутствуют  +  2) нет призраков-дублей среди этих 48
+    for off in OFFICIAL:
+        c = canon(off)
+        variants = elo_by_canon.get(c, [])
+        if not variants:
+            problems.append(f"[wc2026_elo] НЕТ строки для официальной сборной: {off!r}")
+        elif len(variants) > 1:
+            problems.append(f"[wc2026_elo] ПРИЗРАК-ДУБЛЬ для {off!r}: две+ строки {variants}")
+
+    # 3) groups и 4) fixtures — только участники ЧМ
+    for label, names in [("wc2026_groups", grp_rows), ("wc2026_fixtures", fx_rows)]:
+        unknown = sorted({n for n in names if canon(n) not in OFFICIAL_CANON})
+        for n in unknown:
+            problems.append(f"[{label}] неопознанное имя (не входит в 48): {n!r} (canon={canon(n)!r})")
+
+    extra = len([t for t in elo_rows if canon(t) not in OFFICIAL_CANON])
+    print("=" * 56)
+    print(f"wc2026_elo: всего строк {len(elo_rows)}, из них не-участников ЧМ {extra} (норма, игнорируются)")
+    print(f"проверено официальных: {len(OFFICIAL)} | groups: {len(set(grp_rows))} имён | fixtures: {len(set(fx_rows))} имён")
+    print("=" * 56)
     if problems:
         print(f"НАЙДЕНО ПРОБЛЕМ: {len(problems)}")
         for p in problems:
             print("  •", p)
         sys.exit(1)
-    print("ГАРАНТИЯ: 0 проблем — все имена сводятся к 48 официальным, призраков нет.")
+    print("ГАРАНТИЯ: 0 проблем — все 48 сборных на месте, призраков нет, groups/fixtures чисты.")
     sys.exit(0)
 
 
