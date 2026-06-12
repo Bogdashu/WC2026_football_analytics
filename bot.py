@@ -1035,6 +1035,21 @@ def best_score_for(home,away,neutral,code):
         if ok(h,a): return (h,a,p)
     return full[0]
 
+def alt_outcome_line(home,away,neutral,p_h,p_d,p_a,thr=0.25):
+    """Если модель не уверена — строка со ВТОРЫМ по вероятности исходом и его
+    согласованным счётом (напр. 'Не исключено: ничья 1:1 25%'). Иначе ''.
+    Появляется только когда второй исход весом (>= thr), т.е. прогноз спорный."""
+    codes={"H":p_h,"D":p_d,"A":p_a}
+    primary=natural_code(p_h,p_d,p_a)
+    others=sorted(((c,pr) for c,pr in codes.items() if c!=primary), key=lambda x:-x[1])
+    if not others: return ""
+    sc,sp=others[0]
+    if sp<thr: return ""
+    bs=best_score_for(home,away,neutral,sc)
+    if not bs: return ""
+    word={"H":f"победа {ru_team(home)}","A":f"победа {ru_team(away)}","D":"ничья"}[sc]
+    return f"\u2696\ufe0f <b>Не исключено:</b> {esc(word)} (<code>{bs[0]}:{bs[1]}</code>, {sp*100:.0f}%)"
+
 def bar(v,w=10):
     f=max(0,min(w,round(v*w)))
     return "\u2588"*f+"\u2591"*(w-f)
@@ -1085,6 +1100,9 @@ def fmt_detail(d,home,away,host,o1=None,ox=None,o2=None,kt=None):
         bs=best_score_for(home,away,neutral,natural_code(p_h,p_d,p_a))
         if bs:
             lines+=["",f"\U0001f3af <b>Вероятный счёт:</b> <code>{bs[0]}:{bs[1]}</code> <i>(в духе прогноза)</i>"]
+        alt=alt_outcome_line(home,away,neutral,p_h,p_d,p_a)
+        if alt:
+            lines+=[alt]
         if sc:
             sc_str=" \u00b7 ".join(f"<code>{h}:{a}</code> {p*100:.0f}%" for h,a,p in sc)
             lines+=[f"\U0001f4ca <b>Распределение счёта:</b> {sc_str}"]
@@ -1120,6 +1138,8 @@ def fmt_channel(d,home,away,host,o1=None,ox=None,o2=None):
     try:
         bs=best_score_for(home,away,neutral,natural_code(p_h,p_d,p_a))
         if bs: lines+=["",f"\U0001f3af <b>Вероятный счёт:</b> <code>{bs[0]}:{bs[1]}</code>"]
+        alt=alt_outcome_line(home,away,neutral,p_h,p_d,p_a)
+        if alt: lines+=[alt]
     except Exception: pass
     sn=sensation_note(home,away,p_h,p_d,p_a,o1,ox,o2)
     if sn: lines+=["",f"<i>{esc(sn)}</i>"]
