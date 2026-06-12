@@ -975,9 +975,18 @@ def _sv_elo_delta(home,away):
     d=math.log10(vh)-math.log10(va)
     return max(-160.0,min(160.0,SQUAD_ELO_W*d))
 
+def _elo_get(src, team):
+    """Elo, устойчивый к вариантам написания имени (Czechia vs Czech Republic,
+    Korea Republic vs South Korea). DEFAULT_ELO только если команда действительно неизвестна."""
+    if team in src: return src[team]
+    nt = _norm_team(team)
+    for k, v in src.items():
+        if _norm_team(k) == nt: return v
+    return DEFAULT_ELO
+
 def sensation_note(home,away,p_h,p_d,p_a,o1=None,ox=None,o2=None):
     """Upset / draw signal that makes the forecast bolder & more honest."""
-    eh=ELO.get(home,DEFAULT_ELO); ea=ELO.get(away,DEFAULT_ELO)
+    eh=_elo_get(ELO,home); ea=_elo_get(ELO,away)
     model_fav_home=p_h>=p_a
     try:
         if o1 and ox and o2:
@@ -997,7 +1006,7 @@ def predict_1x2(home,away,neutral=False,_elo=None):
     # _elo: опциональный Elo-словарь (для /predict_legacy с frozen baseline Elo).
     # Без него используется глобальный ELO (живой, обновляется после каждого матча).
     src=_elo if _elo is not None else ELO
-    eh=src.get(home,DEFAULT_ELO); ea=src.get(away,DEFAULT_ELO)
+    eh=_elo_get(src,home); ea=_elo_get(src,away)
     diff=(eh+(0.0 if neutral else HOME_ADV_ELO))-ea
     diff+=_sv_elo_delta(home,away)            # squad value (Transfermarkt)
     p_draw=max(DRAW_MIN,min(DRAW_MAX,DRAW_MAX-0.0007*abs(diff)))
@@ -1006,7 +1015,7 @@ def predict_1x2(home,away,neutral=False,_elo=None):
     return _apply_calibrator(rest*(1-p_hs), p_draw, rest*p_hs)
 
 def predict_natural(p_h,p_d,p_a,home,away):
-    eh=ELO.get(home,DEFAULT_ELO); ea=ELO.get(away,DEFAULT_ELO)
+    eh=_elo_get(ELO,home); ea=_elo_get(ELO,away)
     diff=eh-ea; absd=abs(diff); fav=home if diff>=0 else away
     if   p_h>p_a and p_h>p_d and p_h>0.39:
         outcome=f"Победа {ru_team(home)}" if p_h>0.57 else f"Скорее победит {ru_team(home)}"
@@ -1029,7 +1038,7 @@ def predict_scoreline(home, away, neutral=False, top=3, max_goals=6):
     """Top-N most likely exact scorelines (independent-Poisson approx).
     Goals expectation per side is derived from the same Elo+squad-value gap
     that predict_1x2 uses, scaled to ~2.55 goals/match (WC average)."""
-    eh=ELO.get(home,DEFAULT_ELO); ea=ELO.get(away,DEFAULT_ELO)
+    eh=_elo_get(ELO,home); ea=_elo_get(ELO,away)
     diff=(eh+(0.0 if neutral else HOME_ADV_ELO))-ea
     try: diff+=_sv_elo_delta(home,away)
     except Exception: pass
@@ -1811,6 +1820,8 @@ async def cmd_update(u,c):
         await u.message.reply_text(f"\u274c Исключение: {esc(str(e))}",parse_mode=ParseMode.HTML); return
     await u.message.reply_text("\u2705 Результаты загружены.\n\u23f3 Обновляю таблицу и прогнозы\u2026 (базовый прогноз заморожен)",parse_mode=ParseMode.HTML)
     load_all()
+    # snapshot the current baseline state for permanent history
+    snapshot_baseline(make_snapshot_label("ingest"))
     # resolve yesterday's predictions too
     resolve_predictions(date.today()-timedelta(days=1))
     resolve_predictions(date.today())
@@ -2364,15 +2375,11 @@ def count_finished():
 def compute_real_standings(letter,finished=None):
     teams=get_group_teams(letter)
     if not teams: return []
-    # Sopostavlyaem fixtures s komandami gruppy po NORMALIZOVANNOMU imeni,
-    # chtoby varianty napisaniya iz API (Czechia/Czech Republic,
-    # Korea Republic/South Korea, ...) vsyo ravno zachityvalis pravilnoy komande.
-    by_norm={_norm_team(t): t for t in teams}
+    tset=set(teams)
     st={t:{"P":0,"W":0,"D":0,"L":0,"GF":0,"GA":0,"PTS":0} for t in teams}
     for d,home,away,hs,as_,host in (finished if finished is not None else get_all_finished()):
-        ht=by_norm.get(_norm_team(home)); at=by_norm.get(_norm_team(away))
-        if ht and at:
-            sh=st[ht]; sa=st[at]
+        if home in tset and away in tset:
+            sh=st[home]; sa=st[away]
             sh["P"]+=1; sa["P"]+=1
             sh["GF"]+=hs; sh["GA"]+=as_; sa["GF"]+=as_; sa["GA"]+=hs
             if hs>as_: sh["W"]+=1; sh["PTS"]+=3; sa["L"]+=1
@@ -3240,34 +3247,6 @@ async def cmd_set_live(u, c):
     load_all()
     await u.message.reply_text(f"✅ Снимок {lbl} загружен в бота как основной!")
 
-async def cmd_snap_del(u, c):
-    if not is_admin(u.effective_user.id): return
-    if not c.args:
-        return await u.message.reply_text(
-            "🗑 <b>Удалить снимок прогноза</b>\n"
-            f"{SEP}\n\n"
-            "<code>/snap_del &lt;ярлык&gt;</code> — удалить один или несколько снимков\n"
-            "Пример: <code>/snap_del 2026-06-08 2026-06-10_ingest</code>\n\n"
-            "Список ярлыков: /snapshots\n"
-            "<i>« live » (текущий прогноз) удалить нельзя.</i>",
-            parse_mode=ParseMode.HTML)
-    deleted=[]; missing=[]; protected=[]
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            for lbl in c.args:
-                if lbl in ("live","baseline"):
-                    protected.append(lbl); continue
-                key = lbl if lbl.startswith("baseline_") else f"baseline_{lbl}"
-                cur.execute("DELETE FROM wc2026_artifacts WHERE key=%s", (key,))
-                (deleted if cur.rowcount>0 else missing).append(lbl)
-        conn.commit()
-    lines=["🗑 <b>Удаление снимков</b>", SEP]
-    if deleted: lines.append("✅ Удалено: " + ", ".join(f"<code>{esc(x)}</code>" for x in deleted))
-    if missing: lines.append("⚠️ Не найдено: " + ", ".join(f"<code>{esc(x)}</code>" for x in missing))
-    if protected: lines.append("🔒 Нельзя удалить live: " + ", ".join(f"<code>{esc(x)}</code>" for x in protected))
-    lines.append("\nТекущий список: /snapshots")
-    await u.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
-
 async def cmd_history(u, c):
     rows = []
     try:
@@ -3581,7 +3560,7 @@ async def cmd_compare_top(u, c):
     lines += format_shifts(get_top_deltas("P_R32", pa, pb), "Топ изменений: Выход в 1/16 ПЛЕЙ-ОФФ")
     lines += format_shifts(get_top_deltas("1", gpa, gpb, is_group=True, min_delta=0.015), "Топ изменений: 1-Е МЕСТО В ГРУППЕ")
 
-    if len(lines) < 7: lines.append("<i>Заметных изменений нет (все дельты &lt; 1 пп)</i>")
+    if len(lines) < 7: lines.append("<i>Заметных изменений нет (все дельты < 1 пп)</i>")
 
     for p in split_text(chr(10).join(lines)):
         await u.message.reply_text(p, parse_mode=ParseMode.HTML)
@@ -3713,7 +3692,6 @@ HELP_ADMIN = "\n".join([
     "📥 <b>Данные и прогноз</b>",
     "/update — подгрузить свежие результаты матчей и пересверить прогноз (базовый прогноз замораживается). Пример: <code>/update</code>",
     "/set_live &lt;версия&gt; — назначить выбранный снимок текущим прогнозом (live) для всех. Пример: <code>/set_live prematch_FROZEN</code>",
-    "/snap_del &lt;ярлык&gt; — удалить лишний снимок из /snapshots (можно несколько). Пример: <code>/snap_del 2026-06-10_ingest</code>",
     "/reload — заново подтянуть прогноз и Elo из базы (без обращения к внешним источникам). Нужен после ручной заливки данных. Пример: <code>/reload</code>",
     "",
     "📣 <b>Публикация в канал</b>",
@@ -3750,7 +3728,7 @@ def main():
 
     handlers=[
         ("start",cmd_start),("help",cmd_help),("about",cmd_about),("reload",cmd_reload),
-        ("set_live",cmd_set_live),("snap_del",cmd_snap_del),("compare",cmd_compare_top),
+        ("set_live",cmd_set_live),("compare",cmd_compare_top),
         ("baseline",cmd_baseline),("forecast",cmd_forecast),("modal",cmd_modal),
         ("today",cmd_today),("tomorrow",cmd_tomorrow),("next",cmd_next),
         ("match",cmd_match),
