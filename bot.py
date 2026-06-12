@@ -2998,13 +2998,15 @@ async def cmd_predict_legacy(u,c):
 
 
 def _sim_fail_msg(err):
-    low=(err or "").lower()
-    miss=("modulenotfounderror" in low or "no module named" in low
-          or "wc2026_model" in low or "calibrator" in low or "wc2026_predict" in low
-          or "wc2026_goalmodel" in low or "wc2026_calibrator" in low
-          or "filenotfounderror" in low)
+    err=err or ""
+    low=err.lower()
+    _tail="\u274c Sim \u0443\u043f\u0430\u043b:\n<pre>" + esc(err[-1400:]) + "</pre>"
+    _m=_re_label.search(r"no module named '([\w\.]+)'", low)
+    _mod=_m.group(1) if _m else ""
+    miss=(_mod in ("wc2026_model","calibrator","wc2026_predict")
+          or ("filenotfounderror" in low and ("wc2026_goalmodel" in low or "wc2026_calibrator" in low)))
     if miss:
-        return (
+        hint = (
             "\u274c <b>\u0421\u0438\u043c\u0443\u043b\u044f\u0442\u043e\u0440 \u043d\u0435 \u043c\u043e\u0436\u0435\u0442 \u0437\u0430\u043f\u0443\u0441\u0442\u0438\u0442\u044c\u0441\u044f \u043d\u0430 \u0441\u0435\u0440\u0432\u0435\u0440\u0435.</b>\n" + SEP + "\n\n"
             "\u041d\u0430 Railway \u043d\u0435 \u0445\u0432\u0430\u0442\u0430\u0435\u0442 \u0444\u0430\u0439\u043b\u043e\u0432 \u043c\u043e\u0434\u0435\u043b\u0438 (\u043d\u0435 \u0437\u0430\u0434\u0435\u043f\u043b\u043e\u0435\u043d\u044b):\n"
             "\u2022 <code>wc2026_model.py</code>\n"
@@ -3019,7 +3021,8 @@ def _sim_fail_msg(err):
             "<code>python -X utf8 wc2026_upload_baseline.py b.json --label manual</code>\n"
             "(\u043f\u0440\u0438 \u0437\u0430\u043b\u0438\u0432\u043a\u0435 \u0437\u0430\u0434\u0430\u0439 <code>DATABASE_PUBLIC_URL</code> \u2014 \u0431\u043e\u0442 \u0441\u0440\u0430\u0437\u0443 \u043f\u043e\u0434\u0445\u0432\u0430\u0442\u0438\u0442 \u043d\u043e\u0432\u044b\u0439 BASELINE)."
         )
-    return "\u274c Sim \u0443\u043f\u0430\u043b:\n<pre>" + esc(err) + "</pre>"
+        return hint + "\n\n" + _tail
+    return _tail
 
 
 async def cmd_sim_legacy(u,c):
