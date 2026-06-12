@@ -2997,6 +2997,31 @@ async def cmd_predict_legacy(u,c):
         await u.message.reply_text(p, parse_mode=ParseMode.HTML)
 
 
+def _sim_fail_msg(err):
+    low=(err or "").lower()
+    miss=("modulenotfounderror" in low or "no module named" in low
+          or "wc2026_model" in low or "calibrator" in low or "wc2026_predict" in low
+          or "wc2026_goalmodel" in low or "wc2026_calibrator" in low
+          or "filenotfounderror" in low)
+    if miss:
+        return (
+            "\u274c <b>\u0421\u0438\u043c\u0443\u043b\u044f\u0442\u043e\u0440 \u043d\u0435 \u043c\u043e\u0436\u0435\u0442 \u0437\u0430\u043f\u0443\u0441\u0442\u0438\u0442\u044c\u0441\u044f \u043d\u0430 \u0441\u0435\u0440\u0432\u0435\u0440\u0435.</b>\n" + SEP + "\n\n"
+            "\u041d\u0430 Railway \u043d\u0435 \u0445\u0432\u0430\u0442\u0430\u0435\u0442 \u0444\u0430\u0439\u043b\u043e\u0432 \u043c\u043e\u0434\u0435\u043b\u0438 (\u043d\u0435 \u0437\u0430\u0434\u0435\u043f\u043b\u043e\u0435\u043d\u044b):\n"
+            "\u2022 <code>wc2026_model.py</code>\n"
+            "\u2022 <code>calibrator.py</code>\n"
+            "\u2022 <code>wc2026_predict.py</code>\n"
+            "\u2022 <code>wc2026_goalmodel.json</code>\n"
+            "\u2022 <code>wc2026_calibrator.json</code>\n\n"
+            "<b>\u0414\u0432\u0430 \u0432\u0430\u0440\u0438\u0430\u043d\u0442\u0430:</b>\n"
+            "1) \u0417\u0430\u043b\u0438\u0442\u044c \u044d\u0442\u0438 5 \u0444\u0430\u0439\u043b\u043e\u0432 \u0432 \u0440\u0435\u043f\u043e\u0437\u0438\u0442\u043e\u0440\u0438\u0439 \u0438 \u043f\u0435\u0440\u0435\u0434\u0435\u043f\u043b\u043e\u0438\u0442\u044c \u2014 \u0442\u043e\u0433\u0434\u0430 /sim_new \u0437\u0430\u0440\u0430\u0431\u043e\u0442\u0430\u0435\u0442 \u0437\u0434\u0435\u0441\u044c.\n"
+            "2) \u0418\u043b\u0438 \u043f\u043e\u0441\u0447\u0438\u0442\u0430\u0442\u044c \u043b\u043e\u043a\u0430\u043b\u044c\u043d\u043e \u0438 \u0437\u0430\u043b\u0438\u0442\u044c \u0433\u043e\u0442\u043e\u0432\u044b\u0439 \u043f\u0440\u043e\u0433\u043d\u043e\u0437:\n"
+            "<code>python -X utf8 wc2026_simulate.py --sims 30000 --out b.json</code>\n"
+            "<code>python -X utf8 wc2026_upload_baseline.py b.json --label manual</code>\n"
+            "(\u043f\u0440\u0438 \u0437\u0430\u043b\u0438\u0432\u043a\u0435 \u0437\u0430\u0434\u0430\u0439 <code>DATABASE_PUBLIC_URL</code> \u2014 \u0431\u043e\u0442 \u0441\u0440\u0430\u0437\u0443 \u043f\u043e\u0434\u0445\u0432\u0430\u0442\u0438\u0442 \u043d\u043e\u0432\u044b\u0439 BASELINE)."
+        )
+    return "\u274c Sim \u0443\u043f\u0430\u043b:\n<pre>" + esc(err) + "</pre>"
+
+
 async def cmd_sim_legacy(u,c):
     """/sim_legacy [sims=10000] — \u043f\u043e\u043b\u043d\u0430\u044f \u0441\u0438\u043c\u0443\u043b\u044f\u0446\u0438\u044f \u0442\u0443\u0440\u043d\u0438\u0440\u0430 \u043d\u0430 frozen pre-tournament Elo.
     \u0420\u0435\u0437\u0443\u043b\u044c\u0442\u0430\u0442 \u0441\u043e\u0445\u0440\u0430\u043d\u044f\u0435\u0442\u0441\u044f \u0432 wc2026_baseline_legacy.json \u0438 \u041d\u0415 \u043f\u0435\u0440\u0435\u0437\u0430\u043f\u0438\u0441\u044b\u0432\u0430\u0435\u0442 \u043e\u0441\u043d\u043e\u0432\u043d\u043e\u0439 BASELINE."""
@@ -3023,7 +3048,7 @@ async def cmd_sim_legacy(u,c):
         )
         if result.returncode != 0:
             err = (result.stderr or result.stdout or "")[-800:]
-            await u.message.reply_text(f"\u274c Sim \u0443\u043f\u0430\u043b:\n<pre>{esc(err)}</pre>", parse_mode=ParseMode.HTML); return
+            await u.message.reply_text(_sim_fail_msg(err), parse_mode=ParseMode.HTML); return
         with open("wc2026_baseline_legacy.json", encoding="utf-8") as f:
             legacy = json.load(f)
         tp_leg = legacy.get("tournament_probs", {})
@@ -3105,7 +3130,7 @@ async def cmd_sim_new(u,c):
         )
         if result.returncode != 0:
             err = (result.stderr or result.stdout or "")[-800:]
-            await u.message.reply_text(f"\u274c Sim \u0443\u043f\u0430\u043b:\n<pre>{esc(err)}</pre>", parse_mode=ParseMode.HTML); return
+            await u.message.reply_text(_sim_fail_msg(err), parse_mode=ParseMode.HTML); return
         # \u0417\u0430\u043b\u0438\u0432\u0430\u0435\u043c \u0432 \u0411\u0414 + \u0432\u0435\u0440\u0441\u0438\u043e\u043d\u043d\u044b\u0439 \u0441\u043d\u044d\u043f\u0448\u043e\u0442
         label = make_snapshot_label("manual", with_time=True)
         upload = await asyncio.to_thread(
