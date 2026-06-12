@@ -1099,7 +1099,7 @@ def fmt_detail(d,home,away,host,o1=None,ox=None,o2=None,kt=None):
         sc=predict_scoreline(home,away,neutral)
         bs=best_score_for(home,away,neutral,natural_code(p_h,p_d,p_a))
         if bs:
-            lines+=["",f"\U0001f3af <b>Вероятный счёт:</b> <code>{bs[0]}:{bs[1]}</code> <i>(в духе прогноза)</i>"]
+            lines+=["",f"\U0001f3af <b>Вероятный счёт:</b> <code>{bs[0]}:{bs[1]}</code>"]
         alt=alt_outcome_line(home,away,neutral,p_h,p_d,p_a)
         if alt:
             lines+=[alt]
