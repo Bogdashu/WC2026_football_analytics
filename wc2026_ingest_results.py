@@ -126,6 +126,8 @@ NAME_MAP = {
 def normalize(name: str) -> str:
     return NAME_MAP.get(name, name)
 
+from wc2026_names import canon  # edinyy istochnik pravdy dlya imyon komand
+
 
 def api_get(path: str, api_key: str) -> dict:
     import time, socket, http.client
@@ -326,6 +328,13 @@ def apply_elo_updates(conn):
         log.warning("wc2026_elo пуста — пропускаю Elo обновление")
         return 0
 
+    # Разрешаем имя команды из fixtures в КЛЮЧ wc2026_elo по канону,
+    # чтобы варианты (Czechia/Czech Republic) не плодили «призрачные» строки.
+    from wc2026_names import canon as _canon
+    _elo_index = {_canon(k): k for k in elo}
+    def _resolve_elo_key(name):
+        return _elo_index.get(_canon(name), name)
+
     # Все закрытые матчи без применённого Elo, в порядке игры, с round + xG.
     with conn.cursor() as cur:
         cur.execute("""
@@ -347,29 +356,30 @@ def apply_elo_updates(conn):
     applied = 0
     with conn.cursor() as cur:
         for d, home, away, hs, as_, host, rnd, xg_h, xg_a in pending:
-            eh = elo.get(home, DEFAULT_ELO)
-            ea = elo.get(away, DEFAULT_ELO)
-            ch = credit.get(home, 0.0)
-            ca = credit.get(away, 0.0)
+            hk = _resolve_elo_key(home); ak = _resolve_elo_key(away)
+            eh = elo.get(hk, DEFAULT_ELO)
+            ea = elo.get(ak, DEFAULT_ELO)
+            ch = credit.get(hk, 0.0)
+            ca = credit.get(ak, 0.0)
             new_h, new_a, new_ch, new_ca, dbg = _elo_update_for_match(
                 eh, ea, int(hs), int(as_), int(host),
                 round_name=rnd, xg_h=xg_h, xg_a=xg_a,
                 credit_h=ch, credit_a=ca,
             )
-            elo[home] = new_h
-            elo[away] = new_a
-            credit[home] = new_ch
-            credit[away] = new_ca
+            elo[hk] = new_h
+            elo[ak] = new_a
+            credit[hk] = new_ch
+            credit[ak] = new_ca
             # UPSERT Elo + credit для обеих команд.
             cur.execute(
                 "INSERT INTO wc2026_elo (team, elo, surprise_credit) VALUES (%s, %s, %s) "
                 "ON CONFLICT (team) DO UPDATE SET elo = EXCLUDED.elo, surprise_credit = EXCLUDED.surprise_credit",
-                (home, new_h, new_ch),
+                (hk, new_h, new_ch),
             )
             cur.execute(
                 "INSERT INTO wc2026_elo (team, elo, surprise_credit) VALUES (%s, %s, %s) "
                 "ON CONFLICT (team) DO UPDATE SET elo = EXCLUDED.elo, surprise_credit = EXCLUDED.surprise_credit",
-                (away, new_a, new_ca),
+                (ak, new_a, new_ca),
             )
             # Снапшот before/after в строку матча (для постов «было→стало»).
             cur.execute(
@@ -420,6 +430,15 @@ def main():
     finished = [m for m in matches if m.get("status") == "FINISHED"]
     log.info("%d finished matches", len(finished))
 
+    # Index ALL fixtures by the CANONICAL pair of team names, so spelling
+    # variants (Czechia/Czech Republic, Korea Republic/South Korea, ...) line up
+    # with whatever football-data.org returns.
+    fixtures_index = {}
+    with conn.cursor() as cur:
+        cur.execute("SELECT match_date, home, away FROM wc2026_fixtures")
+        for fd, fh, fa in cur.fetchall():
+            fixtures_index.setdefault(frozenset((canon(fh), canon(fa))), []).append((fd, fh, fa))
+
     updated = 0
     not_found = []
     for m in finished:
@@ -434,19 +453,22 @@ def main():
             log.warning("No score for %s vs %s", home, away)
             continue
 
+        cands = fixtures_index.get(frozenset((canon(home_raw), canon(away_raw))), [])
+        if not cands:
+            not_found.append((home_raw, away_raw, home, away))
+            continue
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                UPDATE wc2026_fixtures
-                SET home_score = %s, away_score = %s
-                WHERE (home = %s AND away = %s)
-                   OR (home = %s AND away = %s)
-                """,
-                (hs, as_, home, away, away, home),  # also try reversed
-            )
-            if cur.rowcount == 0:
-                not_found.append((home_raw, away_raw, home, away))
-            else:
+            for fd, fh, fa in cands:
+                # Orient the score to the fixture's stored home/away order.
+                if canon(fh) == canon(home_raw):
+                    sh, sa = hs, as_
+                else:
+                    sh, sa = as_, hs
+                cur.execute(
+                    "UPDATE wc2026_fixtures SET home_score = %s, away_score = %s "
+                    "WHERE match_date = %s AND home = %s AND away = %s",
+                    (sh, sa, fd, fh, fa),
+                )
                 updated += cur.rowcount
         conn.commit()
 
