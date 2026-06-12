@@ -1014,6 +1014,27 @@ def predict_scoreline(home, away, neutral=False, top=3, max_goals=6):
     out.sort(key=lambda x:x[2],reverse=True)
     return out[:top]
 
+def natural_code(p_h,p_d,p_a):
+    """Код исхода H/D/A ТОЧНО как в predict_natural (тот же порог 0.39),
+    чтобы счёт всегда совпадал с заголовком прогноза."""
+    if p_h>p_a and p_h>p_d and p_h>0.39: return "H"
+    if p_a>p_h and p_a>p_d and p_a>0.39: return "A"
+    return "D"
+
+def best_score_for(home,away,neutral,code):
+    """Самый вероятный точный счёт, СОГЛАСОВАННЫЙ с прогнозом 1X2.
+    Решает путаницу 'победа, но счёт ничейный': для победы берём топ счёт
+    с перевесом нужной команды, для ничьи — топ ничейный счёт."""
+    full=predict_scoreline(home,away,neutral,top=49)
+    if not full: return None
+    def ok(h,a):
+        if code=="H": return h>a
+        if code=="A": return a>h
+        return h==a
+    for h,a,p in full:
+        if ok(h,a): return (h,a,p)
+    return full[0]
+
 def bar(v,w=10):
     f=max(0,min(w,round(v*w)))
     return "\u2588"*f+"\u2591"*(w-f)
@@ -1061,9 +1082,12 @@ def fmt_detail(d,home,away,host,o1=None,ox=None,o2=None,kt=None):
     ]
     try:
         sc=predict_scoreline(home,away,neutral)
+        bs=best_score_for(home,away,neutral,natural_code(p_h,p_d,p_a))
+        if bs:
+            lines+=["",f"\U0001f3af <b>Вероятный счёт:</b> <code>{bs[0]}:{bs[1]}</code> <i>(в духе прогноза)</i>"]
         if sc:
             sc_str=" \u00b7 ".join(f"<code>{h}:{a}</code> {p*100:.0f}%" for h,a,p in sc)
-            lines+=["",f"\U0001f3af <b>Топ-3 счёта:</b> {sc_str}"]
+            lines+=[f"\U0001f4ca <b>Распределение счёта:</b> {sc_str}"]
     except Exception:
         pass
     sn=sensation_note(home,away,p_h,p_d,p_a,o1,ox,o2)
@@ -1093,13 +1117,10 @@ def fmt_channel(d,home,away,host,o1=None,ox=None,o2=None):
         f"\U0001f91d <code>{bar(p_d)}</code> {p_d*100:4.0f}%",
         f"\u2708\ufe0f <code>{bar(p_a)}</code> {p_a*100:4.0f}%",
     ]
-    ms=BASELINE.get("modal_scores",{}).get(f"{home}|{away}") if BASELINE else None
-    if not ms:
-        try:
-            sc=predict_scoreline(home,away,neutral,top=1)
-            if sc: ms=f"{sc[0][0]}:{sc[0][1]}"
-        except Exception: ms=None
-    if ms: lines+=["",f"\U0001f3af <b>\u0421\u0430\u043c\u044b\u0439 \u0432\u0435\u0440\u043e\u044f\u0442\u043d\u044b\u0439 \u0441\u0447\u0451\u0442:</b> <code>{esc(ms)}</code>"]
+    try:
+        bs=best_score_for(home,away,neutral,natural_code(p_h,p_d,p_a))
+        if bs: lines+=["",f"\U0001f3af <b>Вероятный счёт:</b> <code>{bs[0]}:{bs[1]}</code>"]
+    except Exception: pass
     sn=sensation_note(home,away,p_h,p_d,p_a,o1,ox,o2)
     if sn: lines+=["",f"<i>{esc(sn)}</i>"]
     return "\n".join(lines)
@@ -2097,7 +2118,8 @@ async def cmd_elo_summary(u, c):
         return
     args = [a for a in (getattr(c, "args", None) or []) if a.strip()]
     if args:
-        team = _resolve_team_name(" ".join(args))
+        pool = set(cur) | set(base)
+        team = _resolve_team_name(" ".join(args), pool)
         if team and (team in cur or team in base):
             txt = _fmt_elo_team(team, base, cur)
             if txt:
@@ -3174,7 +3196,7 @@ async def cmd_history(u, c):
     except Exception as e:
         log.warning("cmd_history: %s", e)
     if not rows:
-        return await u.message.reply_text("📂 Архив пуст. Прогнозы появятся после первого прогона.")
+        return await u.message.reply_text("📭 Архив пуст. Прогнозы появятся после первого прогона.")
     lines = ["📜 <b>АРХИВ ПРОГНОЗОВ</b>",
              "<i>Нажми на команду, чтобы открыть архивный прогноз. "
              "Можно уточнить команду или матч: /view_&lt;label&gt; Аргентина Бразилия</i>", ""]
