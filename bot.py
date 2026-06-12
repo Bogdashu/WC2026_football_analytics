@@ -3312,6 +3312,35 @@ async def cmd_history(u, c):
         lines.append(f"   {pl}/{tot} · 🏆 {esc(ch)} · 👉 /view_{lbl_safe}\n")
     await u.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
 
+async def cmd_snap_del(u, c):
+    if not is_admin(u.effective_user.id):
+        await u.message.reply_text("🔒 Только для разработчика."); return
+    if not c.args:
+        return await u.message.reply_text(
+            "Использование: /snap_del <ярлык>\n"
+            "Например: /snap_del 2026-06-12_1221_manual\n"
+            "Список ярлыков: /snapshots")
+    lbl = c.args[0].strip()
+    if lbl.startswith("baseline_"):
+        lbl = lbl[len("baseline_"):]
+    if lbl.lower() in ("", "baseline", "live", "now", "current"):
+        return await u.message.reply_text("⛔ Нельзя удалить живой прогноз (baseline).")
+    key = "baseline_" + lbl
+    n = 0
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM wc2026_artifacts WHERE key=%s AND key<>%s", (key, "baseline"))
+                n = cur.rowcount
+            conn.commit()
+    except Exception as e:
+        return await u.message.reply_text(f"❌ Ошибка: <pre>{esc(str(e))}</pre>", parse_mode=ParseMode.HTML)
+    if n:
+        await u.message.reply_text(f"🗑 Снимок <code>{esc(lbl)}</code> удалён. Проверь: /snapshots", parse_mode=ParseMode.HTML)
+    else:
+        await u.message.reply_text(f"❌ Снимок <code>{esc(lbl)}</code> не найден. Список: /snapshots", parse_mode=ParseMode.HTML)
+
+
 def _list_snapshot_keys():
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -3379,6 +3408,34 @@ def _fmt_bracket_lines(data):
         for line in ko:
             out.append("• " + str(line).replace("->", "➡️"))
     return out
+
+def _view_group_lines(data):
+    probs = data.get("tournament_probs", {}) or {}
+    gp = data.get("group_positions", {}) or {}
+    mp = data.get("mean_points", {}) or {}
+    g2 = (data.get("modal_forecast", {}) or {}).get("group_top2", {}) or {}
+    out = ["", "1️⃣ <b>ГРУППОВОЙ ЭТАП</b>",
+           "<i>Вых% — выйти из группы · 1м% — выиграть группу · 🏆 — шанс стать чемпионом</i>", ""]
+    for letter in "ABCDEFGHIJKL":
+        teams = get_group_teams(letter)
+        if not teams: continue
+        pair = [t for t in (g2.get(letter) or []) if t in teams][:2]
+        rest = [t for t in teams if t not in pair]
+        rest.sort(key=lambda t: ((gp.get(t, {}) or {}).get("3", 0.0), (probs.get(t, {}) or {}).get("P_R32", 0)), reverse=True)
+        ranked = pair + rest
+        out.append(f"<b>Группа {letter}</b>")
+        for i, t in enumerate(ranked, 1):
+            tp = probs.get(t, {}) or {}
+            win = (gp.get(t, {}) or {}).get("1", 0) or 0
+            mark = "🥇" if i == 1 else ("🥈" if i == 2 else ("🥉" if i == 3 else "▪️"))
+            out.append(
+                f"{mark} <b>{rt(t)}</b> — Вых {tp.get('P_R32',0)*100:.0f}% · "
+                f"1м {win*100:.0f}% · "
+                f"xОч {mp.get(t,0):.1f} · 🏆 {tp.get('P_W',0)*100:.1f}%"
+            )
+        out.append("")
+    return out
+
 
 async def cmd_view(u, c):
     import json
@@ -3463,6 +3520,7 @@ async def cmd_view(u, c):
         tp = tp or {}
         pw = tp.get("P_W", 0)*100; pf = tp.get("P_F", 0)*100
         lines.append(f"{i}. <b>{esc(ru_team(t))}</b> — 🥇 {pw:.1f}% (финал: {pf:.1f}%)")
+    lines += _view_group_lines(data)
     lines += _fmt_bracket_lines(data)
     lines.append("")
     lines.append(f"<i>Сравнить с другой версией: /compare {esc(lbl)} &lt;другая&gt;</i>")
@@ -3760,7 +3818,7 @@ def main():
 
     handlers=[
         ("start",cmd_start),("help",cmd_help),("about",cmd_about),("reload",cmd_reload),
-        ("set_live",cmd_set_live),("compare",cmd_compare_top),
+        ("set_live",cmd_set_live),("compare",cmd_compare_top),("snap_del",cmd_snap_del),
         ("baseline",cmd_baseline),("forecast",cmd_forecast),("modal",cmd_modal),
         ("today",cmd_today),("tomorrow",cmd_tomorrow),("next",cmd_next),
         ("match",cmd_match),
