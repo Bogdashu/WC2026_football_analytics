@@ -803,12 +803,13 @@ def get_snapshot(key):
 
 def record_predictions(fixtures):
     """Store each prediction once. fixtures = rows of get_fixtures()."""
+    import json
     if not fixtures: return 0
     mode = "live" if (BASELINE.get("matches_played") or 0) > 0 else "prematch"
     sql = ("INSERT INTO wc2026_predictions "
            "(match_date,home,away,stage,pred_mode,pred_code,pred_label,confidence,"
-           " p_home,p_draw,p_away,odds_1,odds_x,odds_2,pred_score_h,pred_score_a) "
-           "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+           " p_home,p_draw,p_away,odds_1,odds_x,odds_2,pred_score_h,pred_score_a,pred_scores_top) "
+           "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
            "ON CONFLICT (match_date,home,away) DO NOTHING")
     n=0
     try:
@@ -818,23 +819,34 @@ def record_predictions(fixtures):
                 cur.execute("ALTER TABLE wc2026_predictions ADD COLUMN IF NOT EXISTS pred_score_h INT")
                 cur.execute("ALTER TABLE wc2026_predictions ADD COLUMN IF NOT EXISTS pred_score_a INT")
                 cur.execute("ALTER TABLE wc2026_predictions ADD COLUMN IF NOT EXISTS exact_correct BOOLEAN")
+                cur.execute("ALTER TABLE wc2026_predictions ADD COLUMN IF NOT EXISTS pred_scores_top TEXT")
                 for d,home,away,host,o1,ox,o2 in fixtures:
                     neutral=str(host)!="1"
                     p_h,p_d,p_a=predict_1x2(home,away,neutral)
                     outcome,_,c_l,_=predict_natural(p_h,p_d,p_a,home,away)
                     code=outcome_code(p_h,p_d,p_a)
                     stage="group" if get_team_group(home) else "knockout"
+                    # Freeze the accepted scorelines AT RECORD TIME (published score +
+                    # the model top-3) so a later model update can never change how this
+                    # prediction is judged for the exact-score track.
+                    psh=psa=None; top_json=None
                     try:
-                        # Сохраняем ИМЕННО тот счёт, что публикуется в карточке канала
-                        bs=best_score_for(home,away,neutral,natural_code(p_h,p_d,p_a))
-                        psh,psa=(bs[0],bs[1]) if bs else (None,None)
+                        nat=natural_code(p_h,p_d,p_a)
+                        acc=[]
+                        for _h,_a,_p in predict_scoreline(home,away,neutral):
+                            acc.append([int(_h),int(_a)])
+                        bs=best_score_for(home,away,neutral,nat)
+                        if bs:
+                            psh,psa=int(bs[0]),int(bs[1])
+                            acc.append([psh,psa])
+                        top_json=json.dumps(acc)
                     except Exception:
-                        psh,psa=None,None
+                        psh=psa=None; top_json=None
                     def _f(x):
                         try: return float(x)
                         except: return None
                     cur.execute(sql,(d,home,away,stage,mode,code,outcome,c_l,
-                                     p_h,p_d,p_a,_f(o1),_f(ox),_f(o2),psh,psa))
+                                     p_h,p_d,p_a,_f(o1),_f(ox),_f(o2),psh,psa,top_json))
                     n+=cur.rowcount
             conn.commit()
         log.info("record_predictions: %d new rows",n)
@@ -843,31 +855,42 @@ def record_predictions(fixtures):
     return n
 
 def resolve_predictions(match_date):
-    """Fill in actual results + correctness for a finished day."""
+    """Fill in actual results + correctness for a finished day.
+
+    Exact-score correctness is judged ONLY against the scorelines frozen at
+    record time (pred_scores_top, plus the published pred_score_h/a). It never
+    recomputes from the current model, so refreshing the forecast can no longer
+    retroactively change an already-decided exact-score result.
+    """
+    import json
     finished=get_finished_fixtures(match_date)
     if not finished: return 0
     n=0
     try:
         with get_conn() as conn:
             with conn.cursor() as cur:
+                cur.execute("ALTER TABLE wc2026_predictions ADD COLUMN IF NOT EXISTS pred_scores_top TEXT")
                 for d,home,away,hs,as_,host in finished:
                     try: hs=int(hs); as_=int(as_)
                     except Exception: pass
                     actual="H" if hs>as_ else ("A" if as_>hs else "D")
-                    # Точный счёт засчитан, если реальный счёт = ОПУБЛИКОВАННОМУ прогнозу
-                    # ИЛИ попал в Топ-3 самых вероятных счётов модели.
+                    cur.execute("SELECT pred_scores_top,pred_score_h,pred_score_a "
+                                "FROM wc2026_predictions WHERE match_date=%s AND home=%s AND away=%s",
+                                (d,home,away))
+                    row=cur.fetchone()
                     accept=set()
-                    try:
-                        _neu=str(host)!="1"
-                        for _h,_a,_p in predict_scoreline(home,away,_neu):
-                            accept.add((int(_h),int(_a)))
-                        _ph,_pd,_pa=predict_1x2(home,away,_neu)
-                        _bs=best_score_for(home,away,_neu,natural_code(_ph,_pd,_pa))
-                        if _bs: accept.add((int(_bs[0]),int(_bs[1])))
-                    except Exception:
-                        pass
-                    try: exact = ((int(hs),int(as_)) in accept) if accept else None
-                    except Exception: exact = None
+                    if row:
+                        top_json,psh,psa=row
+                        if top_json:
+                            try:
+                                for pair in json.loads(top_json):
+                                    accept.add((int(pair[0]),int(pair[1])))
+                            except Exception: pass
+                        if psh is not None and psa is not None:
+                            try: accept.add((int(psh),int(psa)))
+                            except Exception: pass
+                    try: exact=((int(hs),int(as_)) in accept) if accept else None
+                    except Exception: exact=None
                     cur.execute(
                         "UPDATE wc2026_predictions "
                         "SET actual_home=%s,actual_away=%s,actual_code=%s,"
