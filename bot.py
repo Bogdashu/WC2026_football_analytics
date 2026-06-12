@@ -2402,11 +2402,21 @@ def count_finished():
 def compute_real_standings(letter,finished=None):
     teams=get_group_teams(letter)
     if not teams: return []
-    tset=set(teams)
+    # Match fixtures to the group roster by CANONICAL name (same source as
+    # get_team_group), so different spellings/aliases (RU/EN) still count.
+    def _c(x):
+        try: return _wc_canon(x)
+        except Exception: return x
+    canon2team={}
+    for t in teams:
+        canon2team[_c(t)]=t
     st={t:{"P":0,"W":0,"D":0,"L":0,"GF":0,"GA":0,"PTS":0} for t in teams}
     for d,home,away,hs,as_,host in (finished if finished is not None else get_all_finished()):
-        if home in tset and away in tset:
-            sh=st[home]; sa=st[away]
+        ht=canon2team.get(_c(home)); at=canon2team.get(_c(away))
+        if ht is not None and at is not None:
+            try: hs=int(hs); as_=int(as_)
+            except Exception: continue
+            sh=st[ht]; sa=st[at]
             sh["P"]+=1; sa["P"]+=1
             sh["GF"]+=hs; sh["GA"]+=as_; sa["GF"]+=as_; sa["GA"]+=hs
             if hs>as_: sh["W"]+=1; sh["PTS"]+=3; sa["L"]+=1
