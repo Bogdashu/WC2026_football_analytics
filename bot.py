@@ -2132,8 +2132,8 @@ def _fmt_elo_overall(base, cur):
     else:
         L.append("🕜 Турнир ещё не начался — Elo равны стартовым.")
     L.append("")
-    L.append("🏅 <b>Текущий топ-10 по силе:</b>")
-    for i, (t, pp, nn, dd) in enumerate(by_now[:10], 1):
+    L.append("🏅 <b>Текущий топ-15 по силе:</b>")
+    for i, (t, pp, nn, dd) in enumerate(by_now[:15], 1):
         tail = ("  <b>%s</b>" % _elo_sg(dd)) if abs(dd) >= 0.5 else ""
         L.append("%2d. <b>%s</b> — <code>%.0f</code>%s" % (i, rt(t), nn, tail))
     changed = [r for r in rows if abs(r[3]) >= 0.5]
