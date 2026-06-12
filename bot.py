@@ -1811,8 +1811,6 @@ async def cmd_update(u,c):
         await u.message.reply_text(f"\u274c Исключение: {esc(str(e))}",parse_mode=ParseMode.HTML); return
     await u.message.reply_text("\u2705 Результаты загружены.\n\u23f3 Обновляю таблицу и прогнозы\u2026 (базовый прогноз заморожен)",parse_mode=ParseMode.HTML)
     load_all()
-    # snapshot the current baseline state for permanent history
-    snapshot_baseline(make_snapshot_label("ingest"))
     # resolve yesterday's predictions too
     resolve_predictions(date.today()-timedelta(days=1))
     resolve_predictions(date.today())
@@ -3242,6 +3240,34 @@ async def cmd_set_live(u, c):
     load_all()
     await u.message.reply_text(f"✅ Снимок {lbl} загружен в бота как основной!")
 
+async def cmd_snap_del(u, c):
+    if not is_admin(u.effective_user.id): return
+    if not c.args:
+        return await u.message.reply_text(
+            "🗑 <b>Удалить снимок прогноза</b>\n"
+            f"{SEP}\n\n"
+            "<code>/snap_del &lt;ярлык&gt;</code> — удалить один или несколько снимков\n"
+            "Пример: <code>/snap_del 2026-06-08 2026-06-10_ingest</code>\n\n"
+            "Список ярлыков: /snapshots\n"
+            "<i>« live » (текущий прогноз) удалить нельзя.</i>",
+            parse_mode=ParseMode.HTML)
+    deleted=[]; missing=[]; protected=[]
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            for lbl in c.args:
+                if lbl in ("live","baseline"):
+                    protected.append(lbl); continue
+                key = lbl if lbl.startswith("baseline_") else f"baseline_{lbl}"
+                cur.execute("DELETE FROM wc2026_artifacts WHERE key=%s", (key,))
+                (deleted if cur.rowcount>0 else missing).append(lbl)
+        conn.commit()
+    lines=["🗑 <b>Удаление снимков</b>", SEP]
+    if deleted: lines.append("✅ Удалено: " + ", ".join(f"<code>{esc(x)}</code>" for x in deleted))
+    if missing: lines.append("⚠️ Не найдено: " + ", ".join(f"<code>{esc(x)}</code>" for x in missing))
+    if protected: lines.append("🔒 Нельзя удалить live: " + ", ".join(f"<code>{esc(x)}</code>" for x in protected))
+    lines.append("\nТекущий список: /snapshots")
+    await u.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+
 async def cmd_history(u, c):
     rows = []
     try:
@@ -3555,7 +3581,7 @@ async def cmd_compare_top(u, c):
     lines += format_shifts(get_top_deltas("P_R32", pa, pb), "Топ изменений: Выход в 1/16 ПЛЕЙ-ОФФ")
     lines += format_shifts(get_top_deltas("1", gpa, gpb, is_group=True, min_delta=0.015), "Топ изменений: 1-Е МЕСТО В ГРУППЕ")
 
-    if len(lines) < 7: lines.append("<i>Заметных изменений нет (все дельты < 1 пп)</i>")
+    if len(lines) < 7: lines.append("<i>Заметных изменений нет (все дельты &lt; 1 пп)</i>")
 
     for p in split_text(chr(10).join(lines)):
         await u.message.reply_text(p, parse_mode=ParseMode.HTML)
@@ -3687,6 +3713,7 @@ HELP_ADMIN = "\n".join([
     "📥 <b>Данные и прогноз</b>",
     "/update — подгрузить свежие результаты матчей и пересверить прогноз (базовый прогноз замораживается). Пример: <code>/update</code>",
     "/set_live &lt;версия&gt; — назначить выбранный снимок текущим прогнозом (live) для всех. Пример: <code>/set_live prematch_FROZEN</code>",
+    "/snap_del &lt;ярлык&gt; — удалить лишний снимок из /snapshots (можно несколько). Пример: <code>/snap_del 2026-06-10_ingest</code>",
     "/reload — заново подтянуть прогноз и Elo из базы (без обращения к внешним источникам). Нужен после ручной заливки данных. Пример: <code>/reload</code>",
     "",
     "📣 <b>Публикация в канал</b>",
@@ -3723,7 +3750,7 @@ def main():
 
     handlers=[
         ("start",cmd_start),("help",cmd_help),("about",cmd_about),("reload",cmd_reload),
-        ("set_live",cmd_set_live),("compare",cmd_compare_top),
+        ("set_live",cmd_set_live),("snap_del",cmd_snap_del),("compare",cmd_compare_top),
         ("baseline",cmd_baseline),("forecast",cmd_forecast),("modal",cmd_modal),
         ("today",cmd_today),("tomorrow",cmd_tomorrow),("next",cmd_next),
         ("match",cmd_match),
