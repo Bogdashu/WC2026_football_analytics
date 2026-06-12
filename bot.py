@@ -2366,11 +2366,15 @@ def count_finished():
 def compute_real_standings(letter,finished=None):
     teams=get_group_teams(letter)
     if not teams: return []
-    tset=set(teams)
+    # Sopostavlyaem fixtures s komandami gruppy po NORMALIZOVANNOMU imeni,
+    # chtoby varianty napisaniya iz API (Czechia/Czech Republic,
+    # Korea Republic/South Korea, ...) vsyo ravno zachityvalis pravilnoy komande.
+    by_norm={_norm_team(t): t for t in teams}
     st={t:{"P":0,"W":0,"D":0,"L":0,"GF":0,"GA":0,"PTS":0} for t in teams}
     for d,home,away,hs,as_,host in (finished if finished is not None else get_all_finished()):
-        if home in tset and away in tset:
-            sh=st[home]; sa=st[away]
+        ht=by_norm.get(_norm_team(home)); at=by_norm.get(_norm_team(away))
+        if ht and at:
+            sh=st[ht]; sa=st[at]
             sh["P"]+=1; sa["P"]+=1
             sh["GF"]+=hs; sh["GA"]+=as_; sa["GF"]+=as_; sa["GA"]+=hs
             if hs>as_: sh["W"]+=1; sh["PTS"]+=3; sa["L"]+=1
