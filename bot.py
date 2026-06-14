@@ -854,59 +854,69 @@ def record_predictions(fixtures):
         log.warning("record_predictions: %s",e)
     return n
 
-def resolve_predictions(match_date):
-    """Fill in actual results + correctness for a finished day.
-
-    Exact-score correctness is judged ONLY against the scorelines frozen at
-    record time (pred_scores_top, plus the published pred_score_h/a). It never
-    recomputes from the current model, so refreshing the forecast can no longer
-    retroactively change an already-decided exact-score result.
+def recompute_prediction_stats():
+    """Self-healing recompute of correctness + form labels for ALL stored
+    predictions, derived only from frozen prediction data:
+      exact_correct STRICT: real score == published predicted score.
+      correct: pred_code == actual outcome.
+      pred_mode 'live' only if a team already played BEFORE this fixture,
+      otherwise 'prematch' (first-round games stay without form).
+    Idempotent: safe to call repeatedly.
     """
-    import json
-    finished=get_finished_fixtures(match_date)
-    if not finished: return 0
-    n=0
+    try:
+        finished=get_all_finished()
+    except Exception:
+        finished=[]
+    res={}; team_dates={}
+    for d,home,away,hs,as_,host in finished:
+        res[(str(d)[:10],home,away)]=(hs,as_)
+        for _t in (home,away):
+            try: team_dates.setdefault(_wc_canon(_t), []).append(str(d)[:10])
+            except Exception: pass
+    def _has_prior(team, d10):
+        try: c=_wc_canon(team)
+        except Exception: c=team
+        return any(fd<d10 for fd in team_dates.get(c, ()))
+    upd=0
     try:
         with get_conn() as conn:
             with conn.cursor() as cur:
-                cur.execute("ALTER TABLE wc2026_predictions ADD COLUMN IF NOT EXISTS pred_scores_top TEXT")
-                for d,home,away,hs,as_,host in finished:
+                cur.execute('SELECT match_date,home,away,pred_code,pred_score_h,pred_score_a FROM wc2026_predictions')
+                rows=cur.fetchall()
+                for d,home,away,pcode,psh,psa in rows:
+                    d10=str(d)[:10]
+                    mode='live' if (_has_prior(home,d10) or _has_prior(away,d10)) else 'prematch'
+                    r=res.get((d10,home,away))
+                    if r is None:
+                        cur.execute('UPDATE wc2026_predictions SET pred_mode=%s WHERE match_date=%s AND home=%s AND away=%s',(mode,d,home,away))
+                        upd+=cur.rowcount; continue
+                    hs,as_=r
                     try: hs=int(hs); as_=int(as_)
-                    except Exception: pass
-                    actual="H" if hs>as_ else ("A" if as_>hs else "D")
-                    cur.execute("SELECT pred_scores_top,pred_score_h,pred_score_a "
-                                "FROM wc2026_predictions WHERE match_date=%s AND home=%s AND away=%s",
-                                (d,home,away))
-                    row=cur.fetchone()
-                    accept=set()
-                    if row:
-                        top_json,psh,psa=row
-                        if top_json:
-                            try:
-                                for pair in json.loads(top_json):
-                                    accept.add((int(pair[0]),int(pair[1])))
-                            except Exception: pass
-                        if psh is not None and psa is not None:
-                            try: accept.add((int(psh),int(psa)))
-                            except Exception: pass
-                    try: exact=((int(hs),int(as_)) in accept) if accept else None
+                    except Exception:
+                        cur.execute('UPDATE wc2026_predictions SET pred_mode=%s WHERE match_date=%s AND home=%s AND away=%s',(mode,d,home,away))
+                        upd+=cur.rowcount; continue
+                    actual='H' if hs>as_ else ('A' if as_>hs else 'D')
+                    try: exact=(psh is not None and psa is not None and int(psh)==hs and int(psa)==as_)
                     except Exception: exact=None
-                    cur.execute(
-                        "UPDATE wc2026_predictions "
-                        "SET actual_home=%s,actual_away=%s,actual_code=%s,"
-                        "    correct=(pred_code=%s),"
-                        "    exact_correct=%s,"
-                        "    resolved_at=now() "
-                        "WHERE match_date=%s AND home=%s AND away=%s",
-                        (hs,as_,actual,actual,exact,d,home,away))
-                    n+=cur.rowcount
+                    cur.execute('UPDATE wc2026_predictions SET actual_home=%s,actual_away=%s,actual_code=%s,correct=(pred_code=%s),exact_correct=%s,pred_mode=%s,resolved_at=COALESCE(resolved_at,now()) WHERE match_date=%s AND home=%s AND away=%s',(hs,as_,actual,actual,exact,mode,d,home,away))
+                    upd+=cur.rowcount
             conn.commit()
     except Exception as e:
-        log.warning("resolve_predictions: %s",e)
-    return n
+        log.warning('recompute_prediction_stats: %s',e)
+    return upd
+
+def resolve_predictions(match_date):
+    """Fill in actual results + correctness for finished matches.
+    Delegates to recompute_prediction_stats() so the exact-score track is judged
+    strictly against the published predicted score, and form labels stay correct
+    regardless of later model updates. match_date is kept for callers.
+    """
+    return recompute_prediction_stats()
 
 def get_accuracy_stats():
     """Overall + by mode (prematch/live) + by stage (group/knockout)."""
+    try: recompute_prediction_stats()
+    except Exception: pass
     base={"correct":0,"resolved":0,"total":0,"by_mode":{},"by_stage":{}}
     try:
         with get_conn() as conn:
@@ -1663,7 +1673,7 @@ async def cmd_stats(u,c):
                 "\U0001f3af <b>ТОЧНЫЙ СЧЁТ</b>\n"
                 f"{SEP}\n\n"
                 f"Угадан точный счёт: <b>{ec}/{er}</b> ({ec/er*100:.1f}%)  <code>{bar(ec/er)}</code>\n\n"
-                "<i>Это сложно: у людей обычно 6\u201310%. Засчитывается, если реальный счёт попал в Топ-3 самых вероятных счётов модели.</i>",
+                "<i>Это сложно: у людей обычно 6\u201310%. Засчитывается, если реальный счёт точно совпал с опубликованным прогнозом счёта.</i>",
                 parse_mode=ParseMode.HTML)
     except Exception as _ex:
         log.warning("exact-score block: %s", _ex)
