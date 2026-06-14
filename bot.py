@@ -2148,8 +2148,8 @@ def _fmt_elo_overall(base, cur):
         L.append("%2d. <b>%s</b> — <code>%.0f</code>%s" % (i, rt(t), nn, tail))
     changed = [r for r in rows if abs(r[3]) >= 0.5]
     if changed:
-        ups = sorted([r for r in changed if r[3] > 0], key=lambda r: r[3], reverse=True)[:5]
-        dns = sorted([r for r in changed if r[3] < 0], key=lambda r: r[3])[:5]
+        ups = sorted([r for r in changed if r[3] > 0], key=lambda r: r[3], reverse=True)[:15]
+        dns = sorted([r for r in changed if r[3] < 0], key=lambda r: r[3])[:15]
         if ups:
             L.append("")
             L.append("🚀 <b>Больше всех прибавили:</b>")
@@ -2172,7 +2172,7 @@ def _fmt_elo_overall(base, cur):
         if movers:
             L.append("")
             L.append("↕️ <b>Рывки в рейтинге (мест):</b>")
-            for t, mv, pr, nr in movers[:5]:
+            for t, mv, pr, nr in movers[:15]:
                 arrow = "⬆️" if mv > 0 else "⬇️"
                 L.append("   %s <b>%s</b>  #%d→#%d  (%s)" % (arrow, rt(t), pr, nr, _elo_sg(mv)))
     else:
