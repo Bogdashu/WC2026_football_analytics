@@ -3656,7 +3656,7 @@ async def cmd_compare_top(u, c):
             d = tb - ta
             if abs(d) >= min_delta * 100: shifts.append((t, ta, tb, d))
         shifts.sort(key=lambda r: -abs(r[3]))
-        return shifts[:5]
+        return shifts[:15]
 
     def format_shifts(shifts, title):
         if not shifts: return []
