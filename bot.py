@@ -881,6 +881,9 @@ def recompute_prediction_stats():
     try:
         with get_conn() as conn:
             with conn.cursor() as cur:
+                cur.execute("ALTER TABLE wc2026_fixtures ADD COLUMN IF NOT EXISTS advance_winner TEXT")
+                cur.execute("SELECT match_date,home,away,advance_winner FROM wc2026_fixtures WHERE advance_winner IS NOT NULL")
+                adv={(str(r[0])[:10],r[1],r[2]):r[3] for r in cur.fetchall()}
                 cur.execute('SELECT match_date,home,away,pred_code,pred_score_h,pred_score_a FROM wc2026_predictions')
                 rows=cur.fetchall()
                 for d,home,away,pcode,psh,psa in rows:
@@ -898,7 +901,13 @@ def recompute_prediction_stats():
                     actual='H' if hs>as_ else ('A' if as_>hs else 'D')
                     try: exact=(psh is not None and psa is not None and int(psh)==hs and int(psa)==as_)
                     except Exception: exact=None
-                    cur.execute('UPDATE wc2026_predictions SET actual_home=%s,actual_away=%s,actual_code=%s,correct=(pred_code=%s),exact_correct=%s,pred_mode=%s,resolved_at=COALESCE(resolved_at,now()) WHERE match_date=%s AND home=%s AND away=%s',(hs,as_,actual,actual,exact,mode,d,home,away))
+                    ok=(pcode==actual)
+                    if actual=='D':
+                        w=adv.get((d10,home,away))
+                        if w:
+                            # Плей-офф с серией пенальти: засчитываем по проходу дальше.
+                            ok=(pcode=='H' and w==home) or (pcode=='A' and w==away)
+                    cur.execute('UPDATE wc2026_predictions SET actual_home=%s,actual_away=%s,actual_code=%s,correct=%s,exact_correct=%s,pred_mode=%s,resolved_at=COALESCE(resolved_at,now()) WHERE match_date=%s AND home=%s AND away=%s',(hs,as_,actual,ok,exact,mode,d,home,away))
                     upd+=cur.rowcount
             conn.commit()
     except Exception as e:
@@ -912,6 +921,33 @@ def resolve_predictions(match_date):
     regardless of later model updates. match_date is kept for callers.
     """
     return recompute_prediction_stats()
+
+def _stored_prediction(d,home,away):
+    """Прогноз, сохранённый в момент публикации: (pred_code, pred_label, correct) или None."""
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT pred_code,pred_label,correct FROM wc2026_predictions "
+                    "WHERE match_date=%s AND home=%s AND away=%s LIMIT 1",(d,home,away))
+                row=cur.fetchone()
+        if row and row[0]: return row
+    except Exception as e:
+        log.warning("_stored_prediction: %s",e)
+    return None
+
+def _advance_winner(d,home,away):
+    """Кто прошёл дальше в матче плей-офф, завершившемся вничью (серия пенальти)."""
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT advance_winner FROM wc2026_fixtures "
+                    "WHERE match_date=%s AND home=%s AND away=%s LIMIT 1",(d,home,away))
+                row=cur.fetchone()
+        return row[0] if row and row[0] else None
+    except Exception:
+        return None
 
 def get_accuracy_stats():
     """Overall + by mode (prematch/live) + by stage (group/knockout)."""
@@ -1306,7 +1342,7 @@ async def cmd_about(u,c):
         "\U0001f9e0 <b>Модель:</b> Elo-рейтинг + калибровка по одзам\n"
         f"\U0001f3b2 <b>Симуляций:</b> {num_sp(sims)} розыгрышей турнира\n"
         f"\U0001f504 <b>Сыграно:</b> {played}/{total} матчей\n"
-        f"\U0001f4c5 <b>Обновлено:</b> {gen or '—'}\n"
+        f"\U0001f4c5 <b>��бновлено:</b> {gen or '—'}\n"
         f"\U0001f4c8 <b>Форм-бонус:</b> {form}\n"
         "\U0001f4b0 <b>Одзы:</b> The Odds API + football-data.org\n\n"
         f"{DASH}\n"
@@ -1374,7 +1410,7 @@ async def cmd_forecast(u,c):
         "<i>По порядку: 1) групповой этап \u2192 2) кто выходит \u2192 3) сетка плей-офф.</i>"
     )
     st1=["1\ufe0f\u20e3 <b>ГРУППОВОЙ ЭТАП</b>",
-         "<i>Ранжир по прогнозу мест (как в плей-офф сетке) · Вых% — выйти из группы · 1м% — выиграть группу · \U0001f3c6 \u2014 шанс стать чемпионом</i>",""]
+         "<i>Ранжир по прогнозу ��ест (как в плей-офф сетке) · Вых% — выйти из группы · 1м% — выиграть группу · \U0001f3c6 \u2014 шанс стать чемпионом</i>",""]
     for letter in "ABCDEFGHIJKL":
         teams=get_group_teams(letter)
         if not teams: continue
@@ -2021,11 +2057,21 @@ async def job_results(ctx):
     lines=[f"\U0001f4cb <b>ИТОГИ — {esc(_label.upper())}</b>",
            "<i>Прогноз нейросети vs реальность</i>",f"{SEP}",""]
     for d,home,away,hs,as_,host in finished:
-        p_h,p_d,p_a=predict_1x2(home,away,str(host)!="1")
-        pred=outcome_code(p_h,p_d,p_a)
         actual="H" if hs>as_ else ("A" if as_>hs else "D")
-        pred_txt={"H":f"Победа {ru_team(home)}","D":"Ничья","A":f"Победа {ru_team(away)}"}[pred]
-        ok=pred==actual; correct+=int(ok); total+=1
+        _sp=_stored_prediction(d,home,away)
+        if _sp:
+            pred,_plabel,_pok=_sp
+            pred_txt=_plabel or {"H":f"Победа {ru_team(home)}","D":"Ничья","A":f"Победа {ru_team(away)}"}[pred]
+            ok=bool(_pok) if _pok is not None else (pred==actual)
+        else:
+            p_h,p_d,p_a=predict_1x2(home,away,str(host)!="1")
+            pred=outcome_code(p_h,p_d,p_a)
+            pred_txt={"H":f"Победа {ru_team(home)}","D":"Ничья","A":f"Победа {ru_team(away)}"}[pred]
+            ok=pred==actual
+        if actual=="D":
+            _aw=_advance_winner(d,home,away)
+            if _aw: pred_txt=f"{pred_txt} (по пен. дальше {ru_team(_aw)})"
+        correct+=int(ok); total+=1
         block=[
             f"\U0001f3df <b>{rt(home)}</b> {hs}:{as_} <b>{rt(away)}</b>",
             f"\U0001f916 Прогноз: {esc(pred_txt)} — {'\u2705 сбылся' if ok else '\u274c мимо'}",
@@ -2515,10 +2561,15 @@ async def cmd_results(u,c):
     lines=["📊 <b>РЕЗУЛЬТАТЫ МАТЧЕЙ</b>","<i>🌍 Реальность vs 🤖 прогноз</i>",SEP,""]
     cor=tot=0
     for d,home,away,hs,as_,host in rows:
-        p_h,p_d,p_a=predict_1x2(home,away,str(host)!="1")
-        pred=outcome_code(p_h,p_d,p_a)
         actual="H" if hs>as_ else ("A" if as_>hs else "D")
-        ok=pred==actual; cor+=int(ok); tot+=1
+        _sp=_stored_prediction(d,home,away)
+        if _sp and _sp[2] is not None:
+            ok=bool(_sp[2])
+        else:
+            p_h,p_d,p_a=predict_1x2(home,away,str(host)!="1")
+            pred=outcome_code(p_h,p_d,p_a)
+            ok=pred==actual
+        cor+=int(ok); tot+=1
         mark="✅" if ok else "❌"
         lines.append(f"📆 {fmt_date_ru(d)}  🏟 <b>{rt(home)}</b> {hs}:{as_} <b>{rt(away)}</b>  {mark}")
     lines.append("")
@@ -2538,11 +2589,21 @@ def _day_results_lines(md):
     lines=[f"\U0001f4cb <b>ИТОГИ {fmt_date_ru(md).upper()}</b>",
            "<i>Прогноз нейросети vs реальность</i>",f"{SEP}",""]
     for d,home,away,hs,as_,host in finished:
-        p_h,p_d,p_a=predict_1x2(home,away,str(host)!="1")
-        pred=outcome_code(p_h,p_d,p_a)
         actual="H" if hs>as_ else ("A" if as_>hs else "D")
-        pred_txt={"H":f"Победа {ru_team(home)}","D":"Ничья","A":f"Победа {ru_team(away)}"}[pred]
-        ok=pred==actual; correct+=int(ok); total+=1
+        _sp=_stored_prediction(d,home,away)
+        if _sp:
+            pred,_plabel,_pok=_sp
+            pred_txt=_plabel or {"H":f"Победа {ru_team(home)}","D":"Ничья","A":f"Победа {ru_team(away)}"}[pred]
+            ok=bool(_pok) if _pok is not None else (pred==actual)
+        else:
+            p_h,p_d,p_a=predict_1x2(home,away,str(host)!="1")
+            pred=outcome_code(p_h,p_d,p_a)
+            pred_txt={"H":f"Победа {ru_team(home)}","D":"Ничья","A":f"Победа {ru_team(away)}"}[pred]
+            ok=pred==actual
+        if actual=="D":
+            _aw=_advance_winner(d,home,away)
+            if _aw: pred_txt=f"{pred_txt} (по пен. дальше {ru_team(_aw)})"
+        correct+=int(ok); total+=1
         mk="\u2705 сбылся" if ok else "\u274c мимо"
         block=[
             f"\U0001f3df <b>{rt(home)}</b> {hs}:{as_} <b>{rt(away)}</b>",
@@ -2591,6 +2652,42 @@ async def cmd_day(u,c):
     for p in split_text("\n".join(lines)):
         await u.message.reply_text(p,parse_mode=ParseMode.HTML)
 
+async def cmd_pens(u,c):
+    """Админ: отметить, кто прошёл дальше по пенальти. /pens ГГГГ-ММ-ДД Команда"""
+    if not is_admin(u.effective_user.id):
+        await u.message.reply_text("\u274c Нет доступа."); return
+    if len(c.args)<2:
+        await u.message.reply_text("Использование: /pens 2026-06-29 Парагвай"); return
+    try: d=date.fromisoformat(str(c.args[0]).strip())
+    except Exception:
+        await u.message.reply_text("\u274c Дата в формате ГГГГ-ММ-ДД."); return
+    name=" ".join(c.args[1:]).strip().lower()
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("ALTER TABLE wc2026_fixtures ADD COLUMN IF NOT EXISTS advance_winner TEXT")
+                cur.execute("SELECT home,away FROM wc2026_fixtures WHERE match_date=%s AND home_score IS NOT NULL AND home_score=away_score",(d,))
+                rows=cur.fetchall()
+            conn.commit()
+    except Exception as e:
+        await u.message.reply_text(f"\u274c Ошибка БД: {esc(str(e))}",parse_mode=ParseMode.HTML); return
+    target=None
+    for h,a in rows:
+        for t in (h,a):
+            if t.lower()==name or ru_team(t).lower()==name: target=(h,a,t)
+    if not target:
+        await u.message.reply_text("\u274c Ничейный матч с этой командой за эту дату не найден."); return
+    h,a,w=target
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE wc2026_fixtures SET advance_winner=%s WHERE match_date=%s AND home=%s AND away=%s",(w,d,h,a))
+        conn.commit()
+    resolve_predictions(d)
+    await u.message.reply_text(
+        f"\u2705 <b>{rt(w)}</b> отмечен как прошедший дальше "
+        f"({fmt_date_ru(d)}: {rt(h)} — {rt(a)}). Статистика пересчитана.",
+        parse_mode=ParseMode.HTML)
+
 def _tour_results_lines(idx):
     """ИТОГИ тура: прогноз vs реальность по сыгранным матчам тура. None если нет."""
     matches=_tour_matches(idx)
@@ -2607,11 +2704,21 @@ def _tour_results_lines(idx):
     lines=[f"\U0001f4cb <b>ИТОГИ — {esc(TOURS[idx][0].upper())}</b>",
            "<i>Прогноз нейросети vs реальность</i>",f"{SEP}",""]
     for d,home,away,hs,as_,host in finished:
-        p_h,p_d,p_a=predict_1x2(home,away,str(host)!="1")
-        pred=outcome_code(p_h,p_d,p_a)
         actual="H" if hs>as_ else ("A" if as_>hs else "D")
-        pred_txt={"H":f"Победа {ru_team(home)}","D":"Ничья","A":f"Победа {ru_team(away)}"}[pred]
-        ok=pred==actual; correct+=int(ok); total+=1
+        _sp=_stored_prediction(d,home,away)
+        if _sp:
+            pred,_plabel,_pok=_sp
+            pred_txt=_plabel or {"H":f"Победа {ru_team(home)}","D":"Ничья","A":f"Победа {ru_team(away)}"}[pred]
+            ok=bool(_pok) if _pok is not None else (pred==actual)
+        else:
+            p_h,p_d,p_a=predict_1x2(home,away,str(host)!="1")
+            pred=outcome_code(p_h,p_d,p_a)
+            pred_txt={"H":f"Победа {ru_team(home)}","D":"Ничья","A":f"Победа {ru_team(away)}"}[pred]
+            ok=pred==actual
+        if actual=="D":
+            _aw=_advance_winner(d,home,away)
+            if _aw: pred_txt=f"{pred_txt} (по пен. дальше {ru_team(_aw)})"
+        correct+=int(ok); total+=1
         mk="\u2705 сбылся" if ok else "\u274c мимо"
         block=[
             f"\U0001f3df <b>{rt(home)}</b> {hs}:{as_} <b>{rt(away)}</b>",
@@ -3828,7 +3935,7 @@ HELP_ADMIN = "\n".join([
     "/reload — заново подтянуть прогноз и Elo из базы (без обращения к внешним источникам). Нужен после ручной заливки данных. Пример: <code>/reload</code>",
     "",
     "📣 <b>Публикация в канал</b>",
-    "/post_preview [дата] — ПРЕДПРОСМОТР поста матчей дня тебе в личку (в канал НЕ отправляется). Примеры: <code>/post_preview</code>, <code>/post_preview 2026-06-12</code>",
+    "/post_preview [дата] — ПРЕДПРОСМОТР поста матчей дня тебе в личку (в кана�� НЕ отправляется). Примеры: <code>/post_preview</code>, <code>/post_preview 2026-06-12</code>",
     "/post_day [дата] — опубликовать матчи дня В КАНАЛ. Примеры: <code>/post_day</code>, <code>/post_day завтра</code>",
     "/post_forecast — опубликовать прогноз в канал. Пример: <code>/post_forecast</code>",
     "/posttour &lt;N&gt; — опубликовать итоги тура в канал вручную (плей-офф автоматически НЕ постится — слишком большие спойлеры). Пример: <code>/posttour 4</code>",
@@ -3870,7 +3977,7 @@ def main():
         ("diff",cmd_diff),("update",cmd_update),
         ("view",cmd_view),
         ("schedule",cmd_schedule),("results",cmd_results),
-        ("day",cmd_day),("itogi",cmd_day),("den",cmd_day),
+        ("day",cmd_day),("itogi",cmd_day),("den",cmd_day),("pens",cmd_pens),
         ("tour",cmd_tour),("posttour",cmd_posttour),("post_tour",cmd_posttour),
         ("table",cmd_table),("value",cmd_value),("squad",cmd_squad),
         ("post_preview",cmd_post_preview),("post_day",cmd_post_day),("post_today",cmd_post_day),("post_forecast",cmd_post_forecast),
