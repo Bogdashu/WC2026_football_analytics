@@ -162,6 +162,26 @@ def main():
     # Патч baseline
     conn = psycopg2.connect(DB)
     cur = conn.cursor()
+
+    # Реально сыгранная 1/16 — в начало сетки (факт, как группы): счёт и
+    # прошедший дальше, с серией пенальти в скобках при ничьей.
+    cur.execute(
+        "SELECT match_date, home, away, home_score, away_score, advance_winner, "
+        "pens_home, pens_away FROM wc2026_fixtures WHERE round='r32' "
+        "AND home_score IS NOT NULL ORDER BY match_date, home")
+    r32_matches = []
+    for _, h, a, hs, as_, adv, ph_, pa_ in cur.fetchall():
+        if hs > as_: w = h
+        elif as_ > hs: w = a
+        else: w = adv or "?"
+        score = f"{int(hs)}:{int(as_)}"
+        if ph_ is not None and pa_ is not None:
+            score += f" (пен. {int(ph_)}:{int(pa_)})"
+        r32_matches.append({"home": h, "away": a, "winner": w, "score": score,
+                            "played": True})
+    if r32_matches:
+        rounds.insert(0, {"code": "R32", "matches": r32_matches})
+        log.info("R32 (факт): %d сыгранных матчей добавлены в сетку", len(r32_matches))
     cur.execute("SELECT content FROM wc2026_artifacts WHERE key='baseline'")
     row = cur.fetchone()
     if not row:
