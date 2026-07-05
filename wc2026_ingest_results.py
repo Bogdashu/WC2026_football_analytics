@@ -178,6 +178,7 @@ def ensure_score_columns(conn):
             ADD COLUMN IF NOT EXISTS xg_home          FLOAT,
             ADD COLUMN IF NOT EXISTS xg_away          FLOAT,
             ADD COLUMN IF NOT EXISTS round            TEXT DEFAULT 'group',
+            ADD COLUMN IF NOT EXISTS advance_winner   TEXT,
             ADD COLUMN IF NOT EXISTS elo_applied      BOOLEAN DEFAULT FALSE,
             ADD COLUMN IF NOT EXISTS elo_home_before  FLOAT,
             ADD COLUMN IF NOT EXISTS elo_home_after   FLOAT,
@@ -452,6 +453,12 @@ def main():
         if hs is None or as_ is None:
             log.warning("No score for %s vs %s", home, away)
             continue
+        # Плей-офф: кто прошёл дальше при ничьей (доп. время / серия пенальти).
+        # football-data: score.winner = HOME_TEAM / AWAY_TEAM / DRAW.
+        winner_flag = (m.get("score", {}) or {}).get("winner")
+        adv_raw = None
+        if hs == as_ and winner_flag in ("HOME_TEAM", "AWAY_TEAM"):
+            adv_raw = home_raw if winner_flag == "HOME_TEAM" else away_raw
 
         cands = fixtures_index.get(frozenset((canon(home_raw), canon(away_raw))), [])
         if not cands:
@@ -464,10 +471,14 @@ def main():
                     sh, sa = hs, as_
                 else:
                     sh, sa = as_, hs
+                adv = None
+                if adv_raw is not None:
+                    adv = fh if canon(fh) == canon(adv_raw) else fa
                 cur.execute(
-                    "UPDATE wc2026_fixtures SET home_score = %s, away_score = %s "
+                    "UPDATE wc2026_fixtures SET home_score = %s, away_score = %s, "
+                    "advance_winner = COALESCE(%s, advance_winner) "
                     "WHERE match_date = %s AND home = %s AND away = %s",
-                    (sh, sa, fd, fh, fa),
+                    (sh, sa, adv, fd, fh, fa),
                 )
                 updated += cur.rowcount
         conn.commit()
