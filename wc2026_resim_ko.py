@@ -34,9 +34,34 @@ R16_BRACKET = [
 ]
 STAGES = ["R16", "QF", "SF", "F", "W"]  # достигнутые стадии (W = чемпион)
 
+# --- «последний танец» и фактор сенсации (те же, что в wc2026_simulate.py) ---
+LEGEND_ELO = {
+    "Argentina": 15.0, "Portugal": 15.0, "Croatia": 10.0, "Germany": 9.0,
+    "Brazil": 9.0, "Egypt": 7.0, "Bosnia": 6.0, "England": 4.0,
+    "Korea Republic": 4.0, "Belgium": 4.0, "Austria": 3.0, "Mexico": 3.0,
+}
+# Стадия, ЗА ВЫХОД в которую играется матч: 1/8 -> QF, 1/4 -> SF, ПФ -> F, финал -> W
+KO_ROUND_MULT = {"QF": 0.60, "SF": 0.80, "F": 1.00, "W": 1.40}
 
-def match_probs(h, a):
-    p_h, p_d, p_a = bot.predict_1x2(h, a, True)  # нейтральное поле
+
+def _legend_bonus(team, next_stage, legend_factor):
+    if legend_factor <= 0.0:
+        return 0.0
+    return LEGEND_ELO.get(team, 0.0) * KO_ROUND_MULT.get(next_stage, 1.0) * legend_factor
+
+
+def match_probs(h, a, next_stage="QF", legend_factor=0.0):
+    """Вероятности прохода с учётом legend-бонуса (временный сдвиг Elo)."""
+    hb = _legend_bonus(h, next_stage, legend_factor)
+    ab = _legend_bonus(a, next_stage, legend_factor)
+    oh, oa = bot.ELO.get(h), bot.ELO.get(a)
+    try:
+        if hb and oh is not None: bot.ELO[h] = oh + hb
+        if ab and oa is not None: bot.ELO[a] = oa + ab
+        p_h, p_d, p_a = bot.predict_1x2(h, a, True)  # нейтральное поле
+    finally:
+        if oh is not None: bot.ELO[h] = oh
+        if oa is not None: bot.ELO[a] = oa
     return p_h + p_d / 2.0, p_a + p_d / 2.0, (p_h, p_d, p_a)
 
 
@@ -45,6 +70,10 @@ def main():
     ap.add_argument("--sims", type=int, default=100000)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--label", default="after_R32")
+    ap.add_argument("--legend-factor", type=float, default=0.0,
+                    help="усиление «последнего танца» легенд (как в wc2026_simulate.py)")
+    ap.add_argument("--surprise", type=float, default=0.0,
+                    help="шанс сенсации на матч: андердогу усиливается доля побед")
     args = ap.parse_args()
 
     # Elo и baseline читаем напрямую из БД (без сетевых источников load_all —
@@ -70,12 +99,17 @@ def main():
     for t in alive:
         reach[t]["R16"] = args.sims
 
-    # кэш вероятностей пар
+    # кэш вероятностей пар (ключ включает стадию — legend-бонус растёт по раундам)
     cache = {}
-    def adv_prob(h, a):
-        if (h, a) not in cache:
-            cache[(h, a)] = match_probs(h, a)
-        return cache[(h, a)]
+    def adv_prob(h, a, nxt="QF"):
+        key = (h, a, nxt)
+        if key not in cache:
+            cache[key] = match_probs(h, a, nxt, args.legend_factor)
+        return cache[key]
+
+    if args.legend_factor > 0 or args.surprise > 0:
+        log.info("[decisive-match flavour] legend_factor=%s surprise=%s",
+                 args.legend_factor, args.surprise)
 
     for _ in range(args.sims):
         current = [t for pair in R16_BRACKET for t in pair]
@@ -83,7 +117,13 @@ def main():
             winners = []
             for i in range(0, len(current), 2):
                 h, a = current[i], current[i + 1]
-                ph, pa, _ = adv_prob(h, a)
+                ph, pa, _ = adv_prob(h, a, nxt_stage)
+                # Сенсация: изредка усиливаем долю побед андердога (как в simulate.py)
+                if args.surprise > 0.0 and rng.random() < args.surprise:
+                    if ph >= pa:
+                        shift = min(0.25, pa * 0.8); ph -= shift; pa += shift
+                    else:
+                        shift = min(0.25, ph * 0.8); pa -= shift; ph += shift
                 w = h if rng.random() < ph / (ph + pa) else a
                 winners.append(w)
                 reach[w][nxt_stage] += 1
@@ -91,7 +131,8 @@ def main():
 
     probs = {t: {s: reach[t][s] / args.sims for s in STAGES} for t in alive}
 
-    # Модальная сетка (детерминированный argmax)
+    # Модальная сетка (детерминированный argmax; legend-бонус учтён, сенсации нет)
+    NEXT_OF = {"R16": "QF", "QF": "SF", "SF": "F", "F": "W"}
     rounds = []
     current = [t for pair in R16_BRACKET for t in pair]
     for play_code in ("R16", "QF", "SF", "F"):
@@ -99,7 +140,7 @@ def main():
         nxt = []
         for i in range(0, len(current), 2):
             h, a = current[i], current[i + 1]
-            ph, pa, (p_h, p_d, p_a) = adv_prob(h, a)
+            ph, pa, (p_h, p_d, p_a) = adv_prob(h, a, NEXT_OF[play_code])
             w = h if ph >= pa else a
             score = None
             try:
@@ -143,7 +184,8 @@ def main():
     if isinstance(base.get("modal_forecast"), dict):
         base["modal_forecast"]["modal_champion"] = champion
     base["generated_at"] = datetime.now(timezone.utc).isoformat()
-    base["resim_note"] = f"KO-resim from real R16 bracket · sims={args.sims} · label={args.label}"
+    base["resim_note"] = (f"KO-resim from real R16 bracket · sims={args.sims} · label={args.label}"
+                          f" · legend_factor={args.legend_factor} · surprise={args.surprise}")
     cur.execute("SELECT count(*) FROM wc2026_fixtures WHERE home_score IS NOT NULL")
     base["matches_played"] = int(cur.fetchone()[0])
 
