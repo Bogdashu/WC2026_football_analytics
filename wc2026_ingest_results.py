@@ -179,6 +179,8 @@ def ensure_score_columns(conn):
             ADD COLUMN IF NOT EXISTS xg_away          FLOAT,
             ADD COLUMN IF NOT EXISTS round            TEXT DEFAULT 'group',
             ADD COLUMN IF NOT EXISTS advance_winner   TEXT,
+            ADD COLUMN IF NOT EXISTS pens_home        INT,
+            ADD COLUMN IF NOT EXISTS pens_away        INT,
             ADD COLUMN IF NOT EXISTS elo_applied      BOOLEAN DEFAULT FALSE,
             ADD COLUMN IF NOT EXISTS elo_home_before  FLOAT,
             ADD COLUMN IF NOT EXISTS elo_home_after   FLOAT,
@@ -447,15 +449,30 @@ def main():
         away_raw = m["awayTeam"]["name"]
         home = normalize(home_raw)
         away = normalize(away_raw)
-        score = m.get("score", {}).get("fullTime", {})
+        sc = m.get("score", {}) or {}
+        score = sc.get("fullTime", {})
         hs = score.get("home")
         as_ = score.get("away")
         if hs is None or as_ is None:
             log.warning("No score for %s vs %s", home, away)
             continue
-        # Плей-офф: кто прошёл дальше при ничьей (доп. время / серия пенальти).
-        # football-data: score.winner = HOME_TEAM / AWAY_TEAM / DRAW.
-        winner_flag = (m.get("score", {}) or {}).get("winner")
+        # Плей-офф: серия пенальти. football-data при PENALTY_SHOOTOUT может
+        # включать голы серии в fullTime — берём игровой счёт из regularTime
+        # (+extraTime), а серию храним отдельно в pens_home/pens_away.
+        winner_flag = sc.get("winner")
+        duration = sc.get("duration", "REGULAR")
+        pen_h = pen_a = None
+        if duration == "PENALTY_SHOOTOUT":
+            pens = sc.get("penalties") or {}
+            pen_h, pen_a = pens.get("home"), pens.get("away")
+            reg = sc.get("regularTime") or {}
+            ext = sc.get("extraTime") or {}
+            if reg.get("home") is not None:
+                hs = int(reg.get("home", 0)) + int((ext.get("home") or 0))
+                as_ = int(reg.get("away", 0)) + int((ext.get("away") or 0))
+            elif pen_h is not None and hs is not None and hs != as_:
+                # fullTime включил пенальти — вычитаем серию, счёт был равный
+                hs, as_ = hs - pen_h, as_ - pen_a
         adv_raw = None
         if hs == as_ and winner_flag in ("HOME_TEAM", "AWAY_TEAM"):
             adv_raw = home_raw if winner_flag == "HOME_TEAM" else away_raw
@@ -469,16 +486,19 @@ def main():
                 # Orient the score to the fixture's stored home/away order.
                 if canon(fh) == canon(home_raw):
                     sh, sa = hs, as_
+                    psh, psa = pen_h, pen_a
                 else:
                     sh, sa = as_, hs
+                    psh, psa = pen_a, pen_h
                 adv = None
                 if adv_raw is not None:
                     adv = fh if canon(fh) == canon(adv_raw) else fa
                 cur.execute(
                     "UPDATE wc2026_fixtures SET home_score = %s, away_score = %s, "
-                    "advance_winner = COALESCE(%s, advance_winner) "
+                    "advance_winner = COALESCE(%s, advance_winner), "
+                    "pens_home = COALESCE(%s, pens_home), pens_away = COALESCE(%s, pens_away) "
                     "WHERE match_date = %s AND home = %s AND away = %s",
-                    (sh, sa, adv, fd, fh, fa),
+                    (sh, sa, adv, psh, psa, fd, fh, fa),
                 )
                 updated += cur.rowcount
         conn.commit()
