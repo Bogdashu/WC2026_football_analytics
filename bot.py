@@ -663,9 +663,9 @@ def _finished_set():
 def _due_results_tour():
     """Oldest tour fully finished (all matches scored) and not yet posted, or None."""
     fin=_finished_set()
-    # Auto-post ONLY group-stage tours (Тур 1/2/3). Playoff recaps are huge
-    # spoilers, so they are NEVER auto-posted — use /tour or /posttour manually.
-    for idx in range(3):
+    # Авто-пост итогов для ВСЕХ туров, включая плей-офф: как только все матчи
+    # тура сыграны, итоги со сверкой прогнозов публикуются автоматически.
+    for idx in range(len(TOURS)):
         if get_meta(f"results_tour_posted_{idx}")=="1": continue
         matches=_tour_matches(idx)
         if not matches: continue
@@ -2688,6 +2688,39 @@ async def cmd_pens(u,c):
         f"({fmt_date_ru(d)}: {rt(h)} — {rt(a)}). Статистика пересчитана.",
         parse_mode=ParseMode.HTML)
 
+async def cmd_postround(u,c):
+    """Админ: опубликовать прогнозы на ВЕСЬ раунд одним постом. /postround [номер тура]"""
+    if not is_admin(u.effective_user.id):
+        await u.message.reply_text("\u274c Нет доступа."); return
+    ch=os.environ.get("CHANNEL_ID","")
+    if not ch:
+        await u.message.reply_text("\u26a0\ufe0f CHANNEL_ID не задан."); return
+    idx=_resolve_tour_idx(c.args)
+    fin=_finished_set()
+    if idx is None:
+        # ближайший тур, в котором есть несыгранные матчи
+        for i in range(len(TOURS)):
+            ms=_tour_matches(i)
+            if ms and any(m not in fin for m in ms): idx=i; break
+    if idx is None:
+        await u.message.reply_text("\u26bd Несыгранных матчей не найдено."); return
+    matches=[m for m in _tour_matches(idx) if m not in fin]
+    if not matches:
+        await u.message.reply_text(f"\u26bd В «{TOURS[idx][0]}» все матчи уже сыграны."); return
+    want={(d,h,a) for d,h,a in matches}
+    dmin=min(d for d,_,_ in matches); dmax=max(d for d,_,_ in matches)
+    rows=[r for r in get_fixtures(dmin,dmax,limit=100) if (r[0],r[1],r[2]) in want]
+    rows.sort(key=lambda r:(get_kickoff(r[0],r[1],r[2]) or datetime.min.replace(tzinfo=timezone.utc)))
+    record_predictions(rows)   # сохраняем прогнозы один раз — для сверки в итогах
+    lines=[f"\u26bd <b>ПРОГНОЗЫ — {esc(TOURS[idx][0].upper())}</b>",
+           "<i>Все матчи раунда · прогнозы нейросети</i>",f"{SEP}",""]
+    for r in rows: lines+=[fmt_channel(*r),f"{DASH}",""]
+    lines.append("\U0001f916 Все прогнозы и вероятности — @wc2026_football_bot")
+    for p in split_text("\n".join(lines)):
+        await c.bot.send_message(chat_id=ch,text=p,parse_mode=ParseMode.HTML)
+    await u.message.reply_text(
+        f"\u2705 Опубликованы прогнозы: {TOURS[idx][0]} ({len(rows)} матчей).",parse_mode=ParseMode.HTML)
+
 def _tour_results_lines(idx):
     """ИТОГИ тура: прогноз vs реальность по сыгранным матчам тура. None если нет."""
     matches=_tour_matches(idx)
@@ -2874,13 +2907,16 @@ def _export_elo_to_csv(path="wc2026_elo.csv"):
 
 def _export_fixtures_to_csv(path="wc2026_fixtures.csv"):
     """Дамп wc2026_fixtures из БД в CSV ВКЛЮЧАЯ home_score/away_score сыгранных матчей.
-    Симулятор увидит уже сыгранные матчи как факт и не будет их разыгрывать."""
+    Симулятор увидит уже сыгранные матчи как факт и не будет их разыгрывать.
+    ВАЖНО: экспортируем только групповые матчи — плей-офф ломает union-find
+    определение групп в wc2026_simulate.py (сетку он строит сам по матрице FIFA)."""
     import csv as _csv
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT match_date, home, away, host, home_score, away_score "
-                "FROM wc2026_fixtures ORDER BY match_date, home"
+                "FROM wc2026_fixtures WHERE round IS NULL OR round='group' "
+                "ORDER BY match_date, home"
             )
             rows = cur.fetchall()
     played = 0
@@ -3788,7 +3824,7 @@ async def cmd_compare_top(u, c):
     champ_b = (b.get("modal_forecast") or {}).get("modal_champion")
     if champ_a or champ_b:
         if champ_a == champ_b:
-            lines += ["", f"🏆 Модальный чемпион не изменился: <b>{esc(ru_team(champ_a) if champ_a else '?')}</b>"]
+            lines += ["", f"🏆 Модальный чемпион не изменилс��: <b>{esc(ru_team(champ_a) if champ_a else '?')}</b>"]
         else:
             lines += ["", f"🏆 Чемпион (модель): <b>{esc(ru_team(champ_a) if champ_a else '?')}</b> → <b>{esc(ru_team(champ_b) if champ_b else '?')}</b>"]
 
@@ -3977,7 +4013,7 @@ def main():
         ("diff",cmd_diff),("update",cmd_update),
         ("view",cmd_view),
         ("schedule",cmd_schedule),("results",cmd_results),
-        ("day",cmd_day),("itogi",cmd_day),("den",cmd_day),("pens",cmd_pens),
+        ("day",cmd_day),("itogi",cmd_day),("den",cmd_day),("pens",cmd_pens),("postround",cmd_postround),
         ("tour",cmd_tour),("posttour",cmd_posttour),("post_tour",cmd_posttour),
         ("table",cmd_table),("value",cmd_value),("squad",cmd_squad),
         ("post_preview",cmd_post_preview),("post_day",cmd_post_day),("post_today",cmd_post_day),("post_forecast",cmd_post_forecast),
@@ -4026,7 +4062,10 @@ def main():
         # Preview: posts each matchday's predictions ~PREVIEW_LEAD_HOURS before its
         # first kickoff. Hourly check + per-day dedup => always BEFORE the matches,
         # never skipped, never a day late, regardless of MSK/UTC day boundaries.
-        app.job_queue.run_repeating(job_preview, interval=3600, first=20)
+        # Ежедневные авто-посты прогнозов отключены по умолчанию: прогнозы на весь
+        # раунд публикуются один раз вручную через /postround. PREVIEW_POST=1 вернёт.
+        if os.environ.get("PREVIEW_POST","0")=="1":
+            app.job_queue.run_repeating(job_preview, interval=3600, first=20)
         results_on=os.environ.get("RESULTS_POST","1")!="0"
         if results_on:
             # Auto results recap: ONE post per GROUP-STAGE tour (Тур 1/2/3), only
