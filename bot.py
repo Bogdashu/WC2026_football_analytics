@@ -196,6 +196,10 @@ def _bracket_blocks_from(data):
             h = rt(m.get("home"));
             a = rt(m.get("away"));
             w = rt(m.get("winner"))
+            if m.get("played"):
+                # Реально сыгранный матч: фактический счёт вместо вероятности
+                lines.append(f"  {h} {m.get('score', '-')} {a} → <b>{w}</b> ✅")
+                continue
             extra = []
             if m.get("adv") is not None:
                 extra.append(f"{float(m['adv']) * 100:.0f}%")
