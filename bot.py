@@ -902,10 +902,14 @@ def record_predictions(fixtures):
                 cur.execute("ALTER TABLE wc2026_predictions ADD COLUMN IF NOT EXISTS pred_scores_top TEXT")
                 for d, home, away, host, o1, ox, o2 in fixtures:
                     neutral = str(host) != "1"
+                    ko = _is_ko(d)
                     p_h, p_d, p_a = predict_1x2(home, away, neutral)
-                    outcome, _, c_l, _ = predict_natural(p_h, p_d, p_a, home, away)
+                    outcome, _, c_l, _ = predict_natural(p_h, p_d, p_a, home, away, ko=ko)
                     code = outcome_code(p_h, p_d, p_a)
-                    stage = "group" if get_team_group(home) else "knockout"
+                    if ko and code == "D":
+                        # В плей-офф ничьей не бывает — прогнозируем проходящего дальше.
+                        code = "H" if p_h >= p_a else "A"
+                    stage = "knockout" if ko else "group"
                     # Freeze the accepted scorelines AT RECORD TIME (published score +
                     # the model top-3) so a later model update can never change how this
                     # prediction is judged for the exact-score track.
@@ -1223,7 +1227,7 @@ def predict_1x2(home, away, neutral=False, _elo=None):
     return _apply_calibrator(rest * (1 - p_hs), p_draw, rest * p_hs)
 
 
-def predict_natural(p_h, p_d, p_a, home, away):
+def predict_natural(p_h, p_d, p_a, home, away, ko=False):
     eh = _elo_get(ELO, home);
     ea = _elo_get(ELO, away)
     diff = eh - ea;
@@ -1234,7 +1238,13 @@ def predict_natural(p_h, p_d, p_a, home, away):
     elif p_a > p_h and p_a > p_d and p_a > 0.39:
         outcome = f"Победа {ru_team(away)}" if p_a > 0.57 else f"Скорее победит {ru_team(away)}"
     else:
-        outcome = "Ничья / равная борьба"
+        # В плей-офф ничьей не бывает — кто-то в любом случае проходит дальше
+        # (доп. время / пенальти), поэтому всегда называем фаворита.
+        if ko:
+            kf = home if p_h >= p_a else away
+            outcome = f"Скорее пройдёт {ru_team(kf)} (равные силы, возможны пенальти)"
+        else:
+            outcome = "Ничья / равная борьба"
     mp = max(p_h, p_a)
     if mp >= 0.58 and absd >= 180:
         c_e, c_l = "\U0001f525", "высокая"; expl = f"{ru_team(fav)} заметно сильнее (Elo +{absd:.0f})"
@@ -1243,6 +1253,34 @@ def predict_natural(p_h, p_d, p_a, home, away):
     else:
         c_e, c_l = "\u2753", "низкая"; expl = "команды близки по уровню"
     return outcome, c_e, c_l, expl
+
+
+KO_START = date(2026, 6, 28)  # первый день плей-офф ЧМ-2026
+
+
+def _is_ko(d):
+    """True, если матч относится к плей-офф (по дате)."""
+    try:
+        dd = d if isinstance(d, date) else date.fromisoformat(str(d)[:10])
+        return dd >= KO_START
+    except Exception:
+        return False
+
+
+def _pens_str(d, home, away):
+    """' (пен. 3:4)' для матчей с серией пенальти, иначе ''."""
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT pens_home, pens_away FROM wc2026_fixtures "
+                    "WHERE match_date=%s AND home=%s AND away=%s LIMIT 1", (d, home, away))
+                row = cur.fetchone()
+        if row and row[0] is not None and row[1] is not None:
+            return f" (пен. {row[0]}:{row[1]})"
+    except Exception:
+        pass
+    return ""
 
 
 def outcome_code(p_h, p_d, p_a):
@@ -1360,15 +1398,16 @@ def split_text(text, max_len=3800):
 def fmt_detail(d, home, away, host, o1=None, ox=None, o2=None, kt=None):
     """Detailed card for the BOT (includes odds + kickoff time + top-3 scores)."""
     neutral = str(host) != "1"
+    ko = _is_ko(d)
     p_h, p_d, p_a = predict_1x2(home, away, neutral)
-    outcome, c_e, c_l, expl = predict_natural(p_h, p_d, p_a, home, away)
+    outcome, c_e, c_l, expl = predict_natural(p_h, p_d, p_a, home, away, ko=ko)
     grp = get_team_group(home) or "?"
     host_lbl = f"{rt(home)} дома" if not neutral else "нейтральное поле"
     if kt is None: kt = get_kickoff(d, home, away)
     kt_lbl = fmt_msk(kt)
     date_line = f"\U0001f4c5 {fmt_date_ru(_msk_date(d, home, away))}"
     if kt_lbl: date_line += f" \u00b7 \U0001f552 {kt_lbl}"
-    date_line += f" \u00b7 Группа\u00a0{grp} \u00b7 {host_lbl}"
+    date_line += (f" \u00b7 Плей-офф \u00b7 {host_lbl}" if ko else f" \u00b7 Группа\u00a0{grp} \u00b7 {host_lbl}")
     lines = [
         f"\U0001f3df <b>{rt(home)}</b>  \u2014  <b>{rt(away)}</b>",
         date_line, "",
@@ -1405,14 +1444,15 @@ def fmt_detail(d, home, away, host, o1=None, ox=None, o2=None, kt=None):
 def fmt_channel(d, home, away, host, o1=None, ox=None, o2=None):
     """Public channel card — prediction + probabilities, NO odds/betting."""
     neutral = str(host) != "1"
+    ko = _is_ko(d)
     p_h, p_d, p_a = predict_1x2(home, away, neutral)
-    outcome, c_e, c_l, expl = predict_natural(p_h, p_d, p_a, home, away)
+    outcome, c_e, c_l, expl = predict_natural(p_h, p_d, p_a, home, away, ko=ko)
     grp = get_team_group(home) or "?"
     host_lbl = f"{rt(home)} дома" if not neutral else "нейтральное поле"
     kt_lbl = fmt_msk(get_kickoff(d, home, away))
     date_line = f"\U0001f4c5 {fmt_date_ru(_msk_date(d, home, away))}"
     if kt_lbl: date_line += f" \u00b7 \U0001f552 {kt_lbl}"
-    date_line += f" \u00b7 Группа\u00a0{grp} \u00b7 {host_lbl}"
+    date_line += (f" \u00b7 Плей-офф \u00b7 {host_lbl}" if ko else f" \u00b7 Группа\u00a0{grp} \u00b7 {host_lbl}")
     lines = [
         f"\U0001f3df <b>{rt(home)}</b>  \u2014  <b>{rt(away)}</b>",
         date_line, "",
@@ -1958,7 +1998,7 @@ async def cmd_history(u, c):
     for key, gen_at, played, total in versions:
         date_str = key.replace("baseline_", "")
         lines.append(f"\U0001f5d3 <b>{date_str}</b> \u2014 сыграно {played or 0}/{total or 72}")
-    lines += ["", "<i>Обновляется автоматически после игровых дней.</i>",
+    lines += ["", "<i>Обновляет��я автоматически после игровых дней.</i>",
               "<i>Подробное сравнение: /snapshots и /diff &lt;ярлык&gt;</i>"]
     await u.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
 
@@ -2341,13 +2381,10 @@ async def job_results(ctx):
             pred = outcome_code(p_h, p_d, p_a)
             pred_txt = {"H": f"Победа {ru_team(home)}", "D": "Ничья", "A": f"Победа {ru_team(away)}"}[pred]
             ok = pred == actual
-        if actual == "D":
-            _aw = _advance_winner(d, home, away)
-            if _aw: pred_txt = f"{pred_txt} (по пен. дальше {ru_team(_aw)})"
         correct += int(ok);
         total += 1
         block = [
-            f"\U0001f3df <b>{rt(home)}</b> {hs}:{as_} <b>{rt(away)}</b>",
+            f"\U0001f3df <b>{rt(home)}</b> {hs}:{as_}{_pens_str(d, home, away)} <b>{rt(away)}</b>",
             f"\U0001f916 Прогноз: {esc(pred_txt)} — {'\u2705 сбылся' if ok else '\u274c мимо'}",
         ]
         chg = get_match_elo_change(d, home, away)
@@ -2921,7 +2958,7 @@ async def cmd_results(u, c):
         cor += int(ok);
         tot += 1
         mark = "✅" if ok else "❌"
-        lines.append(f"📆 {fmt_date_ru(d)}  🏟 <b>{rt(home)}</b> {hs}:{as_} <b>{rt(away)}</b>  {mark}")
+        lines.append(f"📆 {fmt_date_ru(d)}  🏟 <b>{rt(home)}</b> {hs}:{as_}{_pens_str(d, home, away)} <b>{rt(away)}</b>  {mark}")
     lines.append("")
     if tot:
         lines.append(SEP)
@@ -2951,14 +2988,11 @@ def _day_results_lines(md):
             pred = outcome_code(p_h, p_d, p_a)
             pred_txt = {"H": f"Победа {ru_team(home)}", "D": "Ничья", "A": f"Победа {ru_team(away)}"}[pred]
             ok = pred == actual
-        if actual == "D":
-            _aw = _advance_winner(d, home, away)
-            if _aw: pred_txt = f"{pred_txt} (по пен. дальше {ru_team(_aw)})"
         correct += int(ok);
         total += 1
         mk = "\u2705 сбылся" if ok else "\u274c мимо"
         block = [
-            f"\U0001f3df <b>{rt(home)}</b> {hs}:{as_} <b>{rt(away)}</b>",
+            f"\U0001f3df <b>{rt(home)}</b> {hs}:{as_}{_pens_str(d, home, away)} <b>{rt(away)}</b>",
             f"\U0001f916 Прогноз: {esc(pred_txt)} \u2014 {mk}",
         ]
         chg = get_match_elo_change(d, home, away)
@@ -3088,14 +3122,11 @@ def _tour_results_lines(idx):
             pred = outcome_code(p_h, p_d, p_a)
             pred_txt = {"H": f"Победа {ru_team(home)}", "D": "Ничья", "A": f"Победа {ru_team(away)}"}[pred]
             ok = pred == actual
-        if actual == "D":
-            _aw = _advance_winner(d, home, away)
-            if _aw: pred_txt = f"{pred_txt} (по пен. дальше {ru_team(_aw)})"
         correct += int(ok);
         total += 1
         mk = "\u2705 сбылся" if ok else "\u274c мимо"
         block = [
-            f"\U0001f3df <b>{rt(home)}</b> {hs}:{as_} <b>{rt(away)}</b>",
+            f"\U0001f3df <b>{rt(home)}</b> {hs}:{as_}{_pens_str(d, home, away)} <b>{rt(away)}</b>",
             f"\U0001f916 Прогноз: {esc(pred_txt)} \u2014 {mk}",
         ]
         chg = get_match_elo_change(d, home, away)
@@ -3165,7 +3196,7 @@ async def cmd_postround(u, c):
     dmin = min(d for d, _, _ in matches); dmax = max(d for d, _, _ in matches)
     rows = [r for r in get_fixtures(dmin, dmax, limit=100) if (r[0], r[1], r[2]) in want]
     rows.sort(key=lambda r: (get_kickoff(r[0], r[1], r[2]) or datetime.min.replace(tzinfo=timezone.utc)))
-    record_predictions(rows)  # сохраняем прогнозы один раз — для сверки в итогах
+    record_predictions(rows)  # с��храняем прогнозы один раз — для сверки в итогах
     lines = [f"\u26bd <b>ПРОГНОЗЫ — {esc(TOURS[idx][0].upper())}</b>",
              "<i>Все матчи раунда · прогнозы нейросети</i>", f"{SEP}", ""]
     for r in rows: lines += [fmt_channel(*r), f"{DASH}", ""]
